@@ -58,14 +58,10 @@ package operator
 
 ## 下一步
 
-1. 完成当前 Map 代码的 `gofmt`；
-2. 将测试辅助类型从 `collectingSink` 改为 `collectingCollector`；
-3. 增加 context 传递给 Collector 的测试；
-4. 运行 test、race test 和 vet；
-5. 重新暂存并检查 `git diff --cached`；
-6. 起草 `docs/designs/0001-core-execution-model.md`；
-7. 评审 Filter、FlatMap 与当前契约的适配性；
-8. 尚不要实现 Worker Pool、Kafka 或完整 DAG。
+1. 重新暂存并检查 `git diff --cached`；
+2. 起草 `docs/designs/0001-core-execution-model.md`；
+3. 评审 Filter、FlatMap 与当前契约的适配性；
+4. 尚不要实现 Worker Pool、Kafka 或完整 DAG。
 
 ## 工具链
 
