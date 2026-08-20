@@ -290,7 +290,7 @@ FlatMap  1 → 0..N (finite in early versions)
 
 ### 7.4 Collector
 
-状态：`Current`，具体 Runtime 实现尚未出现。
+状态：`Current`，具体 Runtime 实现尚未出现。生命周期与并发决定见 [Core Execution Model](designs/0001-core-execution-model.md)。
 
 职责：
 
@@ -306,7 +306,7 @@ FlatMap  1 → 0..N (finite in early versions)
 - 不等同于最终 Sink；
 - 不保证此前成功 Emit 的输出可回滚；
 - 不允许 Operator 在 `Process` 返回后继续使用；
-- 第一版不保证同一个 Collector 可被并发调用。
+- 不允许 Operator 并发调用或跨 goroutine 使用同一个 Collector。
 
 当前接受的语义：
 
@@ -895,11 +895,11 @@ Runtime marks input terminal
 ```text
 Sink slows down
    ↓
-downstream capacity exhausted
+Sink buffer/request or end-to-end in-flight capacity exhausted
    ↓
-Collector.Emit blocks or reports capacity state
+new output submission or source admission blocks
    ↓
-Workers stop consuming more input
+Workers and bounded mailbox stop making unbounded forward progress
    ↓
 Mailbox fills to its finite capacity
    ↓
@@ -991,7 +991,7 @@ notify completion / commit sinks
 | Source Connector | Runtime/Factory | Runtime | Job 或 split ownership 生命周期 |
 | Worker | Runtime | Runtime | Job 运行期 |
 | Operator instance | Planner/Runtime | Execution Task | Task 生命周期 |
-| Collector | Runtime/Execution Node | Runtime | 一次 Process 或 Task 生命周期，待设计 |
+| Collector | Runtime/Execution Node | Runtime | 一次 Process 调用；物理复用属于实现细节 |
 | Record | Source/Operator | 当前处理边界 | 随数据流转移 |
 | Runtime Envelope | Source boundary | Runtime | 输入终结前 |
 | Sink | Runtime/Factory | Runtime | Job/Task 生命周期 |
@@ -1081,14 +1081,12 @@ State API      → specific backend implementation
 - 普通 Map 是否自动继承 event time、key 和 headers；
 - Operator 是否长期保留为接口，还是以 function adapter 为主；
 - `Collector.Emit` 的 context 是显式传递还是绑定到 Process；
-- Collector 是每次 Process 创建，还是 Task 级复用；
-- Collector 是否以及何时允许并发调用；
+- Operator 实例是否由多个 Pipeline Worker 并发调用，还是每个 lane 独立实例；
 - M1 Source API 采用 `Run(output)` 还是非阻塞 `Poll(output)`；
 - 第一版 Job Definition 是线性 Pipeline 还是最小 DAG；
 - FailJob 时已经在执行的其他 records 是 drain 还是立即 cancel；
 - Skip 是否被视为允许推进 position 的终态；
 - FlatMap 部分 Emit 后失败的重试策略；
-- Sink 完成通知如何关联一个输入产生的多个输出；
 - M2 的 Runtime Envelope 和 position 是否采用泛型、opaque token 或内部 adapter；
 - Kafka rebalance 时允许多长时间 drain；
 - 稳定 Operator identity 从何时开始强制要求。
@@ -1114,4 +1112,3 @@ State API      → specific backend implementation
 如果只阅读一段，请使用以下摘要：
 
 > yaspe 是一个 Go 1.27 的类型安全、可嵌入流处理引擎。当前处于 M0，只实现了最小 `Record[T]`、`Operator[I,O]`、`Collector[T]` 和 `Map[I,O]`。近期目标是实现单进程、有界、record 级并行的 stateless Runtime，并用 `lightning-log-filter` 验证。Operator 只描述计算，Runtime 拥有并发、背压、错误、完成和生命周期。Source 采用由 Runtime 控制的有界进入模型。多个 Kubernetes Pod 的 Kafka partition 分配早期交给 Kafka Consumer Group；yaspe Runtime 决定 safe position，Kafka Connector 执行 commit。不要提前实现 checkpoint、状态、完整 DAG 或分布式控制平面。所有设计仍可根据实现证据调整。
-
