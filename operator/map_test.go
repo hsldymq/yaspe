@@ -29,8 +29,8 @@ func (c *collectingCollector[T]) Emit(
 
 // TestMapTransformsRecord 验证 Map 会转换输入值，并向 Collector 输出一条记录。
 func TestMapTransformsRecord(t *testing.T) {
-	op := operator.NewMap(func(_ context.Context, value int) (string, error) {
-		return strconv.Itoa(value), nil
+	op := operator.NewMap(func(value int) string {
+		return strconv.Itoa(value)
 	})
 
 	output := &collectingCollector[string]{}
@@ -57,7 +57,7 @@ func TestMapTransformsRecord(t *testing.T) {
 func TestMapDoesNotEmitWhenTransformFails(t *testing.T) {
 	transformErr := errors.New("transform failed")
 
-	op := operator.NewMap(func(_ context.Context, _ int) (string, error) {
+	op := operator.NewMapWithContext(func(_ context.Context, _ int) (string, error) {
 		return "", transformErr
 	})
 
@@ -81,8 +81,8 @@ func TestMapDoesNotEmitWhenTransformFails(t *testing.T) {
 func TestMapReturnsEmitFailure(t *testing.T) {
 	emitErr := errors.New("emit failed")
 
-	op := operator.NewMap(func(_ context.Context, value int) (string, error) {
-		return strconv.Itoa(value), nil
+	op := operator.NewMap(func(value int) string {
+		return strconv.Itoa(value)
 	})
 
 	output := &collectingCollector[string]{
@@ -102,7 +102,7 @@ func TestMapPassesContextToTransform(t *testing.T) {
 
 	ctx := context.WithValue(context.Background(), contextKey{}, "expected")
 
-	op := operator.NewMap(func(got context.Context, value int) (int, error) {
+	op := operator.NewMapWithContext(func(got context.Context, value int) (int, error) {
 		if got.Value(contextKey{}) != "expected" {
 			return 0, errors.New("context not propagated")
 		}
