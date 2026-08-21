@@ -97,7 +97,9 @@ package operator
 
 ```text
 Go language version: 1.27
-Current toolchain: go1.27rc2
+Minimum toolchain: Go 1.27 stable
+Current local toolchain: go1.27.0-X:nodwarf5 linux/amd64
 ```
 
-Go 1.27 正式版发布后，应移除 RC toolchain 固定并更新本文件。
+`go.mod` 不固定具体 patch toolchain，由开发环境和 CI 使用 Go 1.27
+或更新的兼容工具链。

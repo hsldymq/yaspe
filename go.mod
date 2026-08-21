@@ -1,5 +1,3 @@
 module github.com/hsldymq/yaspe
 
 go 1.27
-
-toolchain go1.27rc2
