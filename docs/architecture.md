@@ -1,7 +1,7 @@
 # yaspe Living Architecture
 
 文档状态：Living Document  
-最后更新：2026-08-09  
+最后更新：2026-08-21
 当前里程碑：M0 — 核心语义与项目基线  
 关联文档：[Vision](vision.md) · [Roadmap](roadmap.md) · [Current Status](status.md)
 
@@ -304,18 +304,41 @@ FlatMap  1 → 0..N (finite in early versions)
 - 不决定重试；
 - 不提交 Source position；
 - 不等同于最终 Sink；
-- 不保证此前成功 Emit 的输出可回滚；
 - 不允许 Operator 在 `Process` 返回后继续使用；
 - 不允许 Operator 并发调用或跨 goroutine 使用同一个 Collector。
 
 当前接受的语义：
 
+- 第一版保留 `Collector.Emit(ctx, record)` 的显式 context 参数；
+- 内置 Operator 默认将 `Process` 接收的 context 原样透传给 `Emit`；
+- 普通 `Map`、`Filter` 和 `FlatMap` 构造 API 的使用方无需直接处理 context；
+- 显式 context 为自定义 Operator 和未来算子保留使用派生 context 的能力，可在出现具体生命周期问题后重新评估；
 - `Emit` 可以因为有界下游和背压而阻塞；
 - context 用于解除阻塞和优雅取消；
-- `Emit` 返回 `nil` 表示本次输出已被 Collector 接受；
+- `Emit` 返回 `nil` 表示本次输出已被当前 Process 调用的 Collector 接受；
 - `Emit` 返回错误表示本次输出未被接受；
-- context 取消不撤回此前成功 Emit 的输出；
 - “被 Collector 接受”不等于“已经写入最终外部 Sink”。
+
+FlatMap 的一次调用不是事务边界。它产生的多条输出是普通流记录，
+按顺序逐条交给 Collector；首次 Emit 失败后不再发送剩余输出，
+此前已被接受的输出在该次 Process 内仍然可见。Sink 可以为了吞吐和容量
+组织物理 batch，但不应为了保留一次 FlatMap 的输出分组而改变 batch 边界。
+
+M1 的线性同步 Pipeline 以一条 Runtime 已接受的输入作为一次 work attempt。
+中间 Operator 通过 Collector 同步串联，不为每一级建立持久恢复缓存；Chain 的
+最终输出在 attempt 成功前留在 Runtime 可撤销的末端边界，尚未转移给 Sink。
+任一 Operator 失败时，Runtime 丢弃该 attempt 尚未转移的最终输出，并在策略
+允许时用保留的原始输入重新执行整条 Chain。
+
+Chain 成功后，最终输出才转移给 Sink；之后的失败优先在 Sink 边界恢复，
+不重新执行 Operator Chain。末端暂存的数量和大小必须纳入端到端容量预算。
+这一边界只用于减少 Runtime 能够明确避免的重复，不使 FlatMap 成为事务，
+也不要求 Sink 保留 work attempt 的物理 batch 分组。
+
+同一输入派生出的记录共同参与该输入的完成跟踪，但这种关联不等于
+外部事务原子性。输出被 Sink 接受后不能假定可以撤回，重试仍可能产生重复。
+更强的一致性应由可重放 Source、checkpoint 以及具备事务或幂等能力的 Sink
+共同提供，而不是把 Collector 或 Sink batch 当作事务协议。
 
 ### 7.5 Source
 
@@ -348,7 +371,37 @@ Source Connector
 Runtime
 ```
 
-具体接口采用 `Run(output)`、`Poll(output)` 还是 Reader/Split 模型，当前尚未定稿。
+Connector 已从外部系统读取、但尚未完成受控交接的数据，仍由 Connector
+持有，不占用 Runtime 的 record-level in-flight permit，也不进入 completion tracking。
+这一边界允许 Kafka 批量 poll、网络预取和 callback Source 适配各自的物理读取模型，
+但 Connector 内部的未交接数据仍必须在数量和字节上有界。
+
+Job 临时暂停时，Connector 可以保留已读取的有界未交接数据，但不得
+继续扩大预取；恢复后应先按 split 内原顺序交接这些数据，再继续读取新数据。
+暂停业务交接不等于停止外部 session 维护；Kafka Connector 仍需维持必要的
+heartbeat 或等价生命周期，但不能以此为由继续无界获取业务数据。
+
+未交接数据始终从属于特定 split 的当前 ownership。split 被 revoke、
+ownership 连续性无法确认或 Job 终止时，Connector 丢弃对应未交接数据；
+丢弃不产生 completion，也不推进 position。即使同一 split 后来重新分配给同一
+实例，也属于新 ownership，不复用旧 ownership 的未交接缓存。只有明确未发生
+ownership 中断的 split 才可继续使用原缓存。
+
+第一版面向 Runtime 采用非阻塞 Reader 模型。Reader 只立即返回已经可用的业务记录、
+暂时无数据或 Source 结束等结果，不在 Runtime 的数据获取调用中等待外部 I/O。
+暂时无数据时，Connector 通过可等待的可用性通知唤醒 Runtime，避免忙轮询。
+
+外部系统的阻塞读取、批量 poll 和 session 维护由 Connector 内部适配，必要时可使用
+专用 I/O goroutine。Runtime 只在获得 in-flight permit 后才从 Reader 取走记录；
+成功取走即完成 Source 到 Runtime 的记录级责任交接。可用性通知只表示
+“可能有数据”，如果 Runtime 取得 permit 后未能取到记录，应归还该容量。
+
+业务记录与 Source 控制事件使用独立路径。可用性、正常结束、读取失败、
+split assignment/revoke、ownership 变化和宿主取消不伪装成业务 Record，
+在没有业务数据时也能及时唤醒 Runtime。会使读取资格失效的控制事件优先于
+新的数据交接；一旦 Runtime 已知当前 ownership 失效，就不得再接受该 ownership 的记录。
+
+这些条款固定 Source 驱动语义，不预先固定 Go 方法名、通知载体或内部缓冲实现。
 
 ### 7.6 Sink
 
@@ -367,6 +420,21 @@ Runtime
 - 不把“进入 Sink 队列”报告为“外部写入完成”；
 - 不独立宣称端到端 exactly-once；
 - 不自行推进 Source position，除非通过 Runtime 协调协议。
+
+Chain 成功后的最终输出先保留在 Runtime 的有界末端边界。一个 work 的输出在责任上
+整组交接给 Sink：全部接受或全部不接受；这不要求它们在同一个物理 batch 中写入，
+Sink 可以跨 work 组批。交接成功前由 Runtime 持有，成功后由 Sink 负责直到每个必要
+外部效果得到明确结果。
+
+Runtime 负责判断 work 是否具有交付资格，包括暂停、position gap 和 generation fence；
+Sink 负责根据 buffer 和异步请求容量决定何时接管。两者通过有界、通知驱动的边界协作，
+不使用忙轮询。首版生产 Sink 采用有容量时非阻塞取得完整 work 的调度方式，但 pull
+不是长期架构不变量；未来可以替换为 push，只要不改变责任转移、背压和完成语义。
+
+异步回调只向 Runtime 报告结果事件，由 Runtime 协调路径串行、幂等地更新 completion、
+permit、safe position 和 generation 状态。结果区分确认成功、可证明未生效和可能已生效的
+未知状态。若外部协议可靠支持逐项结果，可以保留成功部分并只重试未完成部分；否则按
+整个 batch 处理是其特殊情况。重试与否仍由失败策略决定。
 
 Collector 与 Sink 的区别：
 
@@ -473,6 +541,31 @@ SendToDeadLetter
 
 重试不意味着回滚。只要此前已有 Emit 或外部副作用，就可能产生重复。策略必须了解失败阶段和下游能力。
 
+当策略选择重试时，近期方向是优先暂停引入新数据，把恢复范围限制在
+当前失败和已经受控进入的在途数据，避免持续扩大问题范围。重试可以在
+时间上无限等待，是否根据次数、持续时间、当前时段或其他业务信息终止，
+由用户的失败策略决定。但无论等待多久，保留的数据、goroutine、队列和其他
+运行资源都必须有界，并且 Runtime 必须始终响应宿主取消。
+
+暂停后，已经被 Runtime 接受但尚未开始的记录保留原记录和 in-flight
+容量，不再分配给 Worker。已开始的 work 可继续完成当前 Chain 计算；对于
+同一 split 中位于未解决失败之后的记录，其新的 Sink effect 在末端边界等待，
+避免在已知无法推进 safe position 时制造可以避免的重复。位于失败之前、
+能够填补连续完成缺口的记录可继续进入 Sink；不同 split 按各自的连续进度判断。
+已被 Sink 接受的操作不撤回，继续等待明确结果。
+
+暂停不冻结已完成进度。Runtime 继续处理 Sink completion、计算每个 split 的
+连续 safe position，并在 ownership 仍有效时尽快持久化前进的安全位置。
+
+同一暂停期间继续出现的失败纳入一次 Job 级恢复过程，而不由每条记录
+创建不受协调的后台重试循环。每个失败仍保留独立的错误、记录上下文和
+恢复状态；统一协调负责限制重试并发、避免对同一故障依赖形成惊群，并只在
+所有阻塞项都进入允许继续的状态后恢复新数据。观察和报警可保留单条失败
+细节，但应允许限频和按故障过程聚合。
+
+具体失败动作集合、每条失败的等待节奏以及更细的恢复范围仍属于阶段设计问题，
+不在本文预先固定为具体类型或接口。
+
 ## 8. Reliability Plane
 
 ### 8.1 Source Split
@@ -538,6 +631,12 @@ safe position 仍不能越过 100
 - 区分同一 split 的不同 ownership 生命周期；
 - partition revoke 后拒绝旧 generation 的迟到提交；
 - 为 rebalance 和 fencing 提供本地判断依据。
+
+Ownership 表示当前 Runtime 对某个 split 的处理和提交权责，generation 用于区分
+同一 split 在不同分配任期中的 ownership。Generation fence 只允许当前任期的
+完成和提交影响当前进度，阻止旧任期的迟到 Worker、Sink callback 或 Connector
+提交污染新 ownership。Fencing 只能阻止 Runtime 内部状态和 position 被旧任务更新，
+不能撤销已经发生的外部 Sink effect。
 
 ### 8.5 State Backend
 
@@ -682,6 +781,9 @@ M1 的关键限制：
 
 - 不同 record 可以并行；
 - 单条 record 的 chain 同步执行；
+- 一条输入的整条 chain 构成一次 work attempt，最终输出在 attempt 成功前留在有界末端边界；
+- attempt 失败时丢弃未转移的最终输出，不为每个 Operator 保留持久中间缓存；
+- Source 面向 Runtime 使用非阻塞 Reader 和可等待的可用性通知，外部阻塞 I/O 在 Connector 内部适配；
 - 输出顺序在并行度大于 1 时默认不保证；
 - Source、队列和在途工作数量必须有界；
 - Sink 在 M1 可以同步完成；
@@ -922,7 +1024,9 @@ Failure Policy
    └── Dead Letter (after DLQ succeeds)
 ```
 
-Operator 不自行决定策略。部分 Emit 后的失败不回滚此前成功输出。
+Operator 不自行决定策略。M1 中 Operator Chain 失败会丢弃本次 work attempt
+尚未转移给 Sink 的最终输出；已被 Sink 接受或用户在 Operator 内自行产生的
+外部副作用不在该撤销边界内。
 
 ### 17.4 Job 取消和优雅停止
 
@@ -944,6 +1048,16 @@ wait for all Runtime goroutines
 Run returns
 ```
 
+当用户策略最终选择 FailJob，或宿主要求取消时，Runtime 停止新的重试、
+新输入和尚未开始的 work。已被 Sink 接受但结果未定的操作可以在有限
+关闭期限内等待明确结果。该期限允许用户配置并提供默认值；如果宿主给出
+更早的 deadline，Runtime 不应超过它。
+
+关闭期间完成的 Sink effect 正常更新 completion 和连续 safe position，安全位置
+前进后应尽快提交。到期仍无法确认的操作不得标记为成功。Runtime 在释放
+资源前最后尽力持久化当前安全进度，其余未确认记录由可重放 Source 在
+后续执行中重新提供。
+
 优雅停止不能替代故障恢复，因为进程仍可能被强制终止。
 
 ### 17.5 Kafka rebalance
@@ -963,6 +1077,22 @@ invalidate old generation
 ```
 
 旧 generation 的迟到完成不能推进新 owner 的 position。
+
+Revoke 开始后，Runtime 立即停止该 split 的新读取、新交接和尚未开始的 work。
+在 ownership 失效前允许在有限期限内收敛已开始和已被 Sink 接受的操作，
+并尽力提交连续 safe position。这一收尾不得无限阻塞 rebalance。
+
+Ownership 失效后：
+
+- Connector 丢弃该 split 尚未交接的本地缓存；
+- Runtime 不再启动该 split 已接受但尚未执行的 work；
+- 正在计算的 work 可被通知取消，其迟到完成的末端输出不得再转移给 Sink；
+- 已被 Sink 接受的操作无法假定可以撤销，即使迟到成功也不得推进新 ownership 的 position；
+- 已完成但未能在旧 ownership 有效期内提交的进度不得在失效后补交。
+
+新 owner 从最后成功持久化的 safe position 恢复。未提交但已产生外部效果的记录
+可能重复，这是当前 at-least-once 保证的已知边界，不得通过让旧 owner 跨
+generation 提交来规避。
 
 ### 17.6 Checkpoint（远期）
 
@@ -1064,7 +1194,7 @@ State API      → specific backend implementation
 5. Collector 已接受不等于外部 Sink 已完成。
 6. Sink 入队不等于外部副作用已完成。
 7. 错误策略由 Runtime 统一应用，Operator 只报告错误。
-8. 重试不隐含回滚，部分输出和外部副作用必须被明确考虑。
+8. work attempt 可以丢弃尚未转移给 Sink 的末端输出，但重试不隐含回滚已转移输出或外部副作用。
 9. Source/Connector 专有类型不进入业务 Operator API。
 10. 并行执行不默认提供全局顺序。
 11. Source position 只能推进到连续终结的位置。
@@ -1072,6 +1202,7 @@ State API      → specific backend implementation
 13. 任何一致性声明都说明边界、前提和故障模型。
 14. Job 退出必须能回收 Runtime 管理的全部 goroutine 和资源。
 15. 性能优化不能改变公开语义，除非通过新设计明确修改。
+16. Runtime 与 Sink 的主动调度方向不是架构不变量，但完整 work 的责任交接、有界资源和 completion 事实不能因调度方式改变。
 
 ## 21. 当前开放问题
 
@@ -1080,13 +1211,9 @@ State API      → specific backend implementation
 - `Record` 除 `Value` 外应包含哪些 metadata；
 - 普通 Map 是否自动继承 event time、key 和 headers；
 - Operator 是否长期保留为接口，还是以 function adapter 为主；
-- `Collector.Emit` 的 context 是显式传递还是绑定到 Process；
 - Operator 实例是否由多个 Pipeline Worker 并发调用，还是每个 lane 独立实例；
-- M1 Source API 采用 `Run(output)` 还是非阻塞 `Poll(output)`；
 - 第一版 Job Definition 是线性 Pipeline 还是最小 DAG；
-- FailJob 时已经在执行的其他 records 是 drain 还是立即 cancel；
 - Skip 是否被视为允许推进 position 的终态；
-- FlatMap 部分 Emit 后失败的重试策略；
 - M2 的 Runtime Envelope 和 position 是否采用泛型、opaque token 或内部 adapter；
 - Kafka rebalance 时允许多长时间 drain；
 - 稳定 Operator identity 从何时开始强制要求。
@@ -1111,4 +1238,4 @@ State API      → specific backend implementation
 
 如果只阅读一段，请使用以下摘要：
 
-> yaspe 是一个 Go 1.27 的类型安全、可嵌入流处理引擎。当前处于 M0，只实现了最小 `Record[T]`、`Operator[I,O]`、`Collector[T]` 和 `Map[I,O]`。近期目标是实现单进程、有界、record 级并行的 stateless Runtime，并用 `lightning-log-filter` 验证。Operator 只描述计算，Runtime 拥有并发、背压、错误、完成和生命周期。Source 采用由 Runtime 控制的有界进入模型。多个 Kubernetes Pod 的 Kafka partition 分配早期交给 Kafka Consumer Group；yaspe Runtime 决定 safe position，Kafka Connector 执行 commit。不要提前实现 checkpoint、状态、完整 DAG 或分布式控制平面。所有设计仍可根据实现证据调整。
+> yaspe 是一个 Go 1.27 的类型安全、可嵌入流处理引擎。当前处于 M0，已实现最小 `Record[T]`、`Operator[I,O]`、`Collector[T]` 以及 `Map`、`Filter`、`FlatMap`。近期目标是实现单进程、有界、record 级并行的 stateless Runtime，并用 `lightning-log-filter` 验证。Operator 只描述计算，Runtime 拥有并发、背压、错误、完成和生命周期。Source 面向 Runtime 采用非阻塞 Reader 和受控有界交接，外部阻塞 I/O 由 Connector 内部适配。成功 work 的输出通过有界边界整组向 Sink 转移责任；首版 Sink 非阻塞 pull 只是可替换的调度策略，completion 仍由 Runtime 统一跟踪。多个 Kubernetes Pod 的 Kafka partition 分配早期交给 Kafka Consumer Group；yaspe Runtime 决定 safe position，Kafka Connector 执行 commit。不要提前实现 checkpoint、状态、完整 DAG 或分布式控制平面。所有设计仍可根据实现证据调整。
