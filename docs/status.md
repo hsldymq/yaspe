@@ -71,8 +71,9 @@ package operator
 - Chain 失败时丢弃未转移的末端输出，并在策略允许时使用原始输入重新执行整条 Chain；
 - Chain 成功后输出才转移给 Sink，之后的失败优先在 Sink 边界恢复，不重新执行 Operator；
 - 一个 work 的最终输出向 Sink 整组交接，成功前归 Runtime、成功后归 Sink；整组交接不要求同一物理 batch，Sink 可跨 work 组批；
-- Runtime 决定 work 的 Sink 交付资格，Sink 根据有界 buffer 和异步请求容量决定何时接管；
-- Runtime 与 Sink 使用有界、通知驱动的交接边界，M2 首版采用 Sink 非阻塞 pull，pull 只是可替换的调度策略；
+- Runtime 决定 work 的 Sink 交付资格与内部调度，Sink Connector 不感知 pull、push、mailbox 或 event loop；
+- Sink 对容量的判断和整组责任接管原子完成，结果区分接受、回压和实际错误，不使用分离式容量状态检查；
+- 回压时责任仍在 Runtime，Sink 容量恢复后通过通用通知入口唤醒 Runtime 再次尝试，不使用忙轮询；
 - Sink completion 区分确认成功、可证明未生效和结果未知；重试决策是独立的用户策略维度；
 - 能可靠获得逐项结果时保留成功部分并只重试未完成部分，整批重试是无法细分时的特殊情况；
 - Sink 异步回调统一交给 Runtime 协调路径串行、幂等处理，迟到、乱序和重复通知不得重复终结 work 或推进旧 generation；
@@ -109,7 +110,7 @@ package operator
 ## 当前开放问题
 
 - Record metadata 边界；
-- 第一版 Sink 交接与 completion 语义的具体 Go API；
+- 第一版 Sink 原子接管、容量恢复通知与 completion 事件的具体 Go API；
 - 全局 in-flight budget 与各局部队列容量的关系；
 - Operator 实例是否允许被多个 Pipeline Worker 并发调用；
 - 第一版线性 Job Definition。

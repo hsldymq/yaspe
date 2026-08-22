@@ -317,12 +317,15 @@ Sink 接管后失败时，优先保留已经形成的 terminal output，并在 S
 
 Runtime 与 Sink 之间使用有界、通知驱动的交接边界：
 
-- Runtime 判断哪些 work 当前有资格产生 Sink effect；
-- Sink 判断自身 buffer 和异步请求是否有容量；
-- M2 首版由 Sink 在有容量时非阻塞取得一个完整 eligible work；
-- 没有 work 或容量时等待状态变化通知，不得忙轮询；
-- pull 是阶段调度策略，不是稳定公开语义；
-- 未来可以改为 push、DAG edge 或跨进程 exchange，只要责任转移和有界语义不变。
+- Runtime 判断哪些 work 当前有资格产生 Sink effect，并负责选择、等待、公平性和重试调度；
+- Sink Connector 只被动接收完整 work，不感知 Runtime 内部采用 pull、push、mailbox 还是 event loop；
+- Sink 对容量的判断和整组责任接管必须是一个原子操作，结果区分 `Accepted`、`Backpressured` 和实际错误；
+- `Accepted` 表示 Sink 已取得该 work 全部输出的后续责任；
+- `Backpressured` 是流量控制结果，不是处理失败，此时责任仍在 Runtime，Sink 不得接管部分输出；
+- 不提供先调用 `IsBackpressured`、再提交 work 的分离式协议，避免两步之间容量状态发生变化；
+- 容量恢复时，Sink 通过 Runtime 提供的通用通知入口报告“可以再次尝试”，不负责拉取或选择 work；
+- Runtime 在收到通知后重新尝试交接；没有容量或状态变化时不得忙轮询；
+- 未来可以在 Runtime 内部改用其他调度方式、DAG edge 或跨进程 exchange，只要不改变责任转移、有界背压和完成语义。
 
 ### 7.3 异步 completion
 
@@ -635,7 +638,7 @@ checkpoint completion and recovery
 
 ## 16. 当前开放问题
 
-- Sink 整组交接和 completion 对应的具体 Go API；
+- Sink 原子接管、容量恢复通知和 completion 事件对应的具体 Go API；
 - 全局 in-flight budget 与 Connector 预取、input queue、attempt output 和 Sink buffer 的具体配额关系；
 - `Record` metadata 与 Runtime Envelope 的边界；
 - Emit 成功后的引用数据 ownership 与复制规则；
@@ -683,7 +686,7 @@ checkpoint completion and recovery
 - 同步 Chain 外层的 work-attempt 边界；
 - 可撤销的有界 terminal output；
 - Sink 对一个 work 最终输出的整组责任转移；
-- Sink pull eligible work 的阶段调度方案；
+- Sink Connector 隐藏 pull/push、通过原子接管和通用容量通知完成交接；
 - callback 事件由 Runtime 串行幂等应用；
 - completion 的成功、证明未生效、结果未知三种事实；
 - 暂停期间 position gap 前后 work 的处理；

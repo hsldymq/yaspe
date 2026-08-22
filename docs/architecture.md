@@ -426,10 +426,12 @@ Chain 成功后的最终输出先保留在 Runtime 的有界末端边界。一�
 Sink 可以跨 work 组批。交接成功前由 Runtime 持有，成功后由 Sink 负责直到每个必要
 外部效果得到明确结果。
 
-Runtime 负责判断 work 是否具有交付资格，包括暂停、position gap 和 generation fence；
-Sink 负责根据 buffer 和异步请求容量决定何时接管。两者通过有界、通知驱动的边界协作，
-不使用忙轮询。首版生产 Sink 采用有容量时非阻塞取得完整 work 的调度方式，但 pull
-不是长期架构不变量；未来可以替换为 push，只要不改变责任转移、背压和完成语义。
+Runtime 负责判断 work 是否具有交付资格，包括暂停、position gap 和 generation fence，
+并负责选择、等待、公平性和重试调度。Sink Connector 只被动接收完整 work，不感知
+Runtime 内部采用 pull、push、mailbox 还是 event loop。容量判断与整组责任接管必须原子完成：
+接受后责任转给 Sink；发生回压时责任仍在 Runtime，且回压不等于处理失败。容量恢复由 Sink
+通过 Runtime 提供的通用通知入口报告，Runtime 再次尝试交接，不使用忙轮询。未来可以改变
+内部调度方式，只要不改变责任转移、有界背压和完成语义。
 
 异步回调只向 Runtime 报告结果事件，由 Runtime 协调路径串行、幂等地更新 completion、
 permit、safe position 和 generation 状态。结果区分确认成功、可证明未生效和可能已生效的
@@ -1238,4 +1240,4 @@ State API      → specific backend implementation
 
 如果只阅读一段，请使用以下摘要：
 
-> yaspe 是一个 Go 1.27 的类型安全、可嵌入流处理引擎。当前处于 M0，已实现最小 `Record[T]`、`Operator[I,O]`、`Collector[T]` 以及 `Map`、`Filter`、`FlatMap`。近期目标是实现单进程、有界、record 级并行的 stateless Runtime，并用 `lightning-log-filter` 验证。Operator 只描述计算，Runtime 拥有并发、背压、错误、完成和生命周期。Source 面向 Runtime 采用非阻塞 Reader 和受控有界交接，外部阻塞 I/O 由 Connector 内部适配。成功 work 的输出通过有界边界整组向 Sink 转移责任；首版 Sink 非阻塞 pull 只是可替换的调度策略，completion 仍由 Runtime 统一跟踪。多个 Kubernetes Pod 的 Kafka partition 分配早期交给 Kafka Consumer Group；yaspe Runtime 决定 safe position，Kafka Connector 执行 commit。不要提前实现 checkpoint、状态、完整 DAG 或分布式控制平面。所有设计仍可根据实现证据调整。
+> yaspe 是一个 Go 1.27 的类型安全、可嵌入流处理引擎。当前处于 M0，已实现最小 `Record[T]`、`Operator[I,O]`、`Collector[T]` 以及 `Map`、`Filter`、`FlatMap`。近期目标是实现单进程、有界、record 级并行的 stateless Runtime，并用 `lightning-log-filter` 验证。Operator 只描述计算，Runtime 拥有并发、背压、错误、完成和生命周期。Source 面向 Runtime 采用非阻塞 Reader 和受控有界交接，外部阻塞 I/O 由 Connector 内部适配。成功 work 的输出通过有界边界整组向 Sink 转移责任；Sink Connector 不感知内部 pull/push，容量判断与整组责任接管原子完成，completion 仍由 Runtime 统一跟踪。多个 Kubernetes Pod 的 Kafka partition 分配早期交给 Kafka Consumer Group；yaspe Runtime 决定 safe position，Kafka Connector 执行 commit。不要提前实现 checkpoint、状态、完整 DAG 或分布式控制平面。所有设计仍可根据实现证据调整。
