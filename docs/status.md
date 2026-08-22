@@ -116,9 +116,10 @@ package operator
 
 ## 下一步
 
-1. 继续讨论 Record metadata 和端到端容量预算；
-2. 再将已确定的 Sink 语义映射为第一版最小 Go API；
-3. 尚不要实现 Worker Pool、Kafka 或完整 DAG。
+1. 以 `designs/0001-core-execution-model.md` 为唯一正式核心执行模型；
+2. 从正式 Design 第 16 节继续收敛开放问题，优先讨论 Sink API、容量预算和 Record metadata；
+3. 明确 Operator 实例并发、Skip 终态和 Kafka revoke 默认期限；
+4. 在核心开放问题收敛前，尚不要实现 Worker Pool、Kafka 或完整 DAG。
 
 ## 工具链
 
