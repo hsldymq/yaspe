@@ -1,6 +1,6 @@
 # yaspe Current Status
 
-最后更新：2026-08-21
+最后更新：2026-08-23
 当前里程碑：M0 — 核心语义与项目基线
 
 ## 新会话阅读顺序
@@ -71,12 +71,27 @@ package operator
 - Chain 失败时丢弃未转移的末端输出，并在策略允许时使用原始输入重新执行整条 Chain；
 - Chain 成功后输出才转移给 Sink，之后的失败优先在 Sink 边界恢复，不重新执行 Operator；
 - 一个 work 的最终输出向 Sink 整组交接，成功前归 Runtime、成功后归 Sink；整组交接不要求同一物理 batch，Sink 可跨 work 组批；
+- Runtime 将 terminal output 包装为带不透明 completion 身份的 `SinkItem[T]`；Sink Connector 接收一个 work 的完整 `[]SinkItem[T]`，不接收内部 `Work`；
+- Connector 使用 `item.Record` 生成目标系统请求，并在 callback 时原样报告对应 item，无需维护 index 或依赖业务值相等性；`T` 必须匹配 Sink 输入类型；
+- Runtime 保留 attempt、generation、position 和 completion 状态；`Accept` 每次接收绑定当前 work 的 `SinkResultReporter`，reporter 可在返回后保存、跨 goroutine 使用且必须并发安全；
+- 只有 `SinkAccepted, nil` 才使 reporter 有效；Runtime 必须安全处理 callback 早于 `Accept` 返回的竞态，容量恢复通知与 work reporter 分离；
+- reporter 通过 `Report([]SinkItemResult[T])` 增量或批量报告，outcome 为 `SinkSucceeded`、`SinkNotApplied` 或 `SinkUnknown`；成功的 `Err` 必须为 nil，后两者必须为非 nil，没有底层异常时使用标准哨兵错误；
+- `Report` 不返回 error，并把 results slice 所有权转给 Runtime；Connector 调用后不得读取、修改或复用该 slice 及其 backing array，从而允许 Runtime 避免复制；
+- 未来通用异步 Sink 可以内部增加物理请求级 result handler，聚合跨 work 组批或拆批结果，但不改变稳定的 `Accept(items, reporter)` 边界；
+- 每个 Sink 由独立 Sink Coordinator 调用 `Accept`；Pipeline Worker 只向有界 terminal queue 整组提交 completed work，不直接调用 Sink 或维护 Sink 容量；
+- Runtime 为每个 Sink 实例创建 `SinkContext` 并调用一次 `Open`，成功后才开放业务数据，结束时最多调用一次 `Close`；第一版 `SinkContext` 只提供 `LifecycleContext()` 和 `CapacityNotifier()`；
+- `SinkCapacityNotifier.NotifyAvailable()` 报告调用瞬间观察到可用容量，但不预留容量或保证下一次 `Accept` 成功；它可并发调用、不返回 error，Runtime 容忍重复、合并和过时通知；
+- Sink 生命周期 context 可供后台任务和已接管异步操作保存且仅由 Runtime 取消；`Accept` context 只控制单次接管，`Close` 使用独立 context 控制有限收尾；
+- terminal queue 满时 Worker 可取消地阻塞并持有当前 work；固定 Worker、队列、Coordinator current 和 Sink in-flight 都计入资源预算，Coordinator/completion 路径不得依赖被阻塞的 Worker；
 - Runtime 决定 work 的 Sink 交付资格与内部调度，Sink Connector 不感知 pull、push、mailbox 或 event loop；
-- Sink 对容量的判断和整组责任接管原子完成，结果区分接受、回压和实际错误，不使用分离式容量状态检查；
-- 回压时责任仍在 Runtime，Sink 容量恢复后通过通用通知入口唤醒 Runtime 再次尝试，不使用忙轮询；
+- Sink 原子接管方法返回 `(SinkAcceptStatus, error)`：`SinkAccepted` 表示整组接管，`SinkBackpressured` 表示一个也未接管；任何非 `nil` error 同样表示一个也未接管并忽略 status；
+- 回压时责任仍在 Runtime；容量通知采用单调 version，Coordinator 在 `Accept` 前观察版本，返回回压后若版本已变化就立即重试，否则原子等待后续版本，从而避免丢失唤醒；
 - Sink completion 区分确认成功、可证明未生效和结果未知；重试决策是独立的用户策略维度；
 - 能可靠获得逐项结果时保留成功部分并只重试未完成部分，整批重试是无法细分时的特殊情况；
 - Sink 异步回调统一交给 Runtime 协调路径串行、幂等处理，迟到、乱序和重复通知不得重复终结 work 或推进旧 generation；
+- 外部客户端 callback 只能通过 reporter/notifier 提交事实；capacity 使用同步推进 version 的独立 signal，每个 reporter 使用有界 result inbox；
+- 同一 reporter 的多次增量 Report 在 Coordinator drain 前最多产生一个 pending wakeup，重复或非法结果在进入 pending 存储前丢弃，活跃 reporter 总数受 in-flight 上限约束；
+- Sink Coordinator 将 item outcome 聚合成 work-level completion 后交给 Completion Tracker，后者负责输入终态、permit 和 position；capacity 与 completion 不强制共用普通 FIFO channel；
 - Sink 的等待 buffer、并发请求、重试项和 timer 都必须有界；
 - 每次 Process 获得逻辑独立的 Collector，Process 返回后 Collector 失效；
 - Collector 仅允许在 Process 调用 goroutine 中串行使用，不保证线程安全；
@@ -110,7 +125,6 @@ package operator
 ## 当前开放问题
 
 - Record metadata 边界；
-- 第一版 Sink 原子接管、容量恢复通知与 completion 事件的具体 Go API；
 - 全局 in-flight budget 与各局部队列容量的关系；
 - Operator 实例是否允许被多个 Pipeline Worker 并发调用；
 - 第一版线性 Job Definition。
