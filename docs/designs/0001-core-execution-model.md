@@ -76,8 +76,12 @@ Operator 不创建 Worker Pool，不提交 Source position，也不决定 Job �
 - **ownership**：当前 Runtime 对一个 split 的处理和提交权责。
 - **generation**：同一 split 的一次 ownership 任期；重新获得同一 split 也是新任期。
 - **generation fence**：拒绝旧任期的迟到完成或提交污染当前 ownership。
+- **work**：Runtime 已接管的一条原始输入及其端到端责任状态；从 Source admission 持续到输入终结，一个 work 可以经历一次或多次 attempt。
 - **in-flight permit**：Runtime 接受一条尚未终结输入所占用的端到端容量名额。
 - **work attempt**：一条 Runtime 已接受的原始输入执行完整同步 Operator Chain 的一次尝试。
+- **Pipeline Worker**：Runtime 预先创建并长期复用的固定 goroutine；顺序执行多个不同 work，不与某个 work 永久绑定。
+- **execution slot**：当前可执行 Operator Chain 的并发名额；第一版与 Pipeline Worker 一一对应，数量等于 `Parallelism`。
+- **execution lane**：一条独立并行执行通道；第一版由一个 Pipeline Worker、一个 execution slot 和该通道独占的 Operator Chain 实例组成。
 - **terminal output**：一次 Chain 成功后形成、尚未交给 Sink 的最终输出集合。
 - **completion**：一条输入的全部必要下游效果是否进入明确结果。
 - **safe position**：一个 split 中连续完成、恢复时可以从其后继续的位置。
@@ -97,6 +101,30 @@ position committable
 ```
 
 Worker 可以在适当的责任交接后复用；in-flight permit 只能在记录终结后释放；Source position 只能在连续完成后推进。
+
+### 2.4 Work、Worker、slot 与 permit 的关系
+
+```text
+取得 in-flight permit
+    ↓
+Runtime 接管输入并创建 work
+    ↓
+等待 execution slot
+    ↓
+Pipeline Worker 执行一次 work attempt
+    ↓
+completed work 成功进入 terminal queue
+    ↓
+execution slot 释放，Worker 可执行下一个 work
+    ↓
+Sink 接管并异步完成必要 effect
+    ↓
+work terminal
+    ↓
+in-flight permit 释放
+```
+
+work 是状态与责任载体，不是 goroutine。Retry 为同一 work 创建新的 attempt，继续使用原 permit。第一版一个 Worker goroutine 对应一个 execution slot，并与一套独立 Operator Chain 共同组成一条 execution lane；Worker 阻塞在 terminal queue Put 时仍占用该 slot，Put 成功后即释放执行关系，不需要跟随 work 等待 Sink completion。
 
 ## 3. 近期执行形态
 
@@ -121,6 +149,12 @@ Map → Filter → FlatMap → terminal output
 - 以后可以根据真实 workload 增加显式 chain boundary，而不是现在实现完整物理 DAG。
 
 并行度大于一时，第一版不保证不同输入之间的全局输出顺序。
+
+每条 execution lane 拥有独立创建的 Operator Chain；不同 lane 不共享 Operator 实例。同一
+实例只由所属 lane 的 Pipeline Worker 串行调用，因此普通 Operator 无需为了 `Process`
+并发调用自行加锁，也不得被 Runtime 同时用于多条 lane。Job Definition 必须保留创建每条
+Chain 所需的信息，而不能仅依赖一个待共享的现成 Operator 对象；具体 factory/构建 API
+留到第一版线性 Job Definition 中确定。
 
 ## 4. Source 物理模型与 Runtime Reader
 
@@ -176,7 +210,7 @@ Runtime-owned input
 
 Source 已读取不等于 Runtime 已接受。只有 Runtime 取得 permit 并完成交接后，才承担把该输入跟踪到明确终态的责任。
 
-Connector 预取必须同时在记录数和字节数上有界。Runtime 无容量时，Connector 可以阻塞、暂停业务读取、使用 credit、保留有界缓存或采用协议等价方式，但不得继续扩大积压。
+第一版 Connector 预取至少在记录数上有明确上限。Runtime 无容量时，Connector 可以阻塞、暂停业务读取、使用 credit、保留有界缓存或采用协议等价方式，但不得继续扩大积压。按字节限制预取属于后续增强，不是当前保证。
 
 ### 4.5 Kafka session 特殊约束
 
@@ -195,6 +229,27 @@ session、heartbeat、assignment、revoke 是否继续推进
 ```
 
 分开处理。具体 pause/resume 和 poll 策略留给 Kafka Connector Design。
+
+### 4.6 Source 值、Record 与 Runtime Envelope 的边界
+
+Source Connector 从外部客户端取得原始数据后，由配置的 deserializer/parser 将其转换为
+业务值 `T`。Source 特有且业务需要观察的信息，例如 Kafka key、headers、topic 或时间戳，
+由 deserializer 按所选输出模型放入 `T`；同一个 Connector 因而可以产出简单值，也可以
+产出携带丰富 Source metadata 的业务类型。
+
+Deserializer 只产生 `T`。完成正式交接前，Connector 在自身有界缓冲中持有该值；Runtime
+取得 in-flight permit 后，通过前述非阻塞 Reader 取走 `T`，并统一创建 `Record[T]`、内部
+Envelope 和 Work。具体 Reader 接口与方法名留待 Source API 实现时确定。第一版
+`Record[T]` 仍只有 `Value T`，不增加通用 metadata 容器。
+
+普通 Map 把输入转换为新的输出类型时，只有被 transform 明确保留在输出值中的 Source
+metadata 才会继续到达下游。这是类型转换的显式语义，不由 Runtime 隐式复制。split、
+position、ownership generation、work identity、attempt、completion 和 permit 等正确性
+metadata 永远只存在于 Runtime Envelope，不进入 `Record[T]` 或业务值 `T`。
+
+Event time 不是所有 Source 都存在，也不能仅凭 Kafka timestamp 推断为业务事件时间。
+第一版不把 event time 加入 `Record[T]`；只有在 window、watermark、timer 等真实需求出现，
+并同时定义产生、传播和变换语义后，才重新评估是否增加可选的通用 event-time 字段。
 
 ## 5. Collector 生命周期与并发
 
@@ -283,7 +338,7 @@ Sink-owned output
 - 策略允许重试时，可以使用保留的原始输入重新执行整条 Chain；
 - 暂停、position gap 或 generation 变化时，可以阻止尚未产生外部 effect 的 work 继续交接。
 
-它不是事务日志，也不提供外部原子性。终端暂存的记录数和字节数必须纳入全局资源预算。
+它不是事务日志，也不提供外部原子性。第一版终端暂存按 work 数量保持有界；字节预算属于后续增强。
 
 Operator 内自行产生的外部副作用不受末端暂存保护。重新执行 Chain 可能重复这些副作用，责任由 Operator 作者承担。
 
@@ -321,7 +376,7 @@ Sink 接管后失败时，优先保留已经形成的 terminal output，并在 S
 
 Connector 使用 `item.Record` 转换目标系统需要的请求，并让原 `SinkItem[T]` 跟随该请求直到 callback，再通过 reporter 原样报告对应 item 的结果。Connector 不解释不透明身份、不维护 records index，也不依赖业务值相等性；因此内容相同的多条 Record 仍可被 Runtime 准确区分。目标系统自己的结构应使用 `KafkaRequest`、`PostgresRow` 等具体名称，避免与 `SinkItem` 混淆。
 
-attempt、generation、Source position、completion 状态和调度信息仍由 Runtime 保存。原子接管方法采用每次交接传入绑定式结果报告器的方案，概念签名为：
+attempt、generation、Source position、completion 状态和调度信息仍由 Runtime 保存。原子接管方法采用每次交接传入绑定式结果报告器的方案，当前拟定 API 为：
 
 ```go
 type SinkContext interface {
@@ -500,7 +555,7 @@ Connector stops expanding business prefetch
 
 Kafka session/control loop仍应继续运行。
 
-### 8.3 总预算
+### 8.3 第一版数量预算
 
 端到端资源包括：
 
@@ -514,9 +569,25 @@ Connector prefetch
 + retry state and timers
 ```
 
-全局预算至少需要考虑记录数和字节数。仅限制 channel 长度或记录数不足以约束大小差异很大的日志。retry 原则上继续占用原 completion responsibility 和资源预算。
+第一版只按数量控制，不实现字节预算、动态借贷或单 work 输出数量限制。Runtime 公开的核心限制为：
 
-具体预算分配、公平性和动态大小调整仍是开放问题。
+```go
+type RuntimeOptions struct {
+    Parallelism      int
+    MaxInFlightWorks int
+}
+```
+
+- `Parallelism` 决定固定 Pipeline Worker goroutine 数量；Runtime 不为每个 work 创建 goroutine；
+- `MaxInFlightWorks` 是端到端 work permit 总数，覆盖 input queue、Worker current、terminal queue、Coordinator current、Sink-owned in-flight 和 retry；
+- work 在这些位置间移动时沿用同一个 permit，不重复计数；Worker 将 completed work 成功 Put 到 terminal queue 后即可执行下一条，但 permit 持续到 work terminal；
+- input queue、terminal work queue 和 reporter wakeup 等局部容量由 Runtime 根据这两个值推导为有界内部默认值，第一版不作为用户配置；
+- 第一版 `terminalWorkQueueCapacity = min(MaxInFlightWorks, 2 * Parallelism)`，用于吸收约两轮 Worker 同时完成的短暂突发；倍数是可通过 benchmark 调整的内部参数，未来改为 1 倍或其他值不改变公开语义；
+- terminal queue 按 completed work 计数，一个 work 的完整 `[]SinkItem[T]` 只占一个 queue slot；
+- Sink 通过自身 `MaxBufferedItems` 或等价配置限制已接管 item 数，Source Connector 通过 `PrefetchItems` 或等价配置限制未交接预取；
+- retry 继续占用原 completion responsibility 和同一个 work permit。
+
+第一版明确不保证单条 Record、单 work FlatMap 输出或系统总驻留数据的字节数有界。业务应为 Sink 配置足以原子接管正常 item group 的容量；永久超过 Sink 最大接管能力的 group 返回真实 error，不得无限 Backpressured。后续只有在实际数据证明需要时，再增加字节预算或 `MaxOutputsPerWork`。
 
 ## 9. Position 与第一版一致性保证
 
@@ -696,8 +767,8 @@ checkpoint completion and recovery
 ### 15.1 Source 与背压
 
 - 慢 Sink 最终阻止 Source 继续扩大读取或预取；
-- 队列和 Sink 饱和时，记录数、字节数和 goroutine 保持有界；
-- Connector 内部预取数量和字节可配置或有明确上限；
+- 队列和 Sink 饱和时，work/item 数量和 goroutine 保持有界；第一版不保证字节数有界；
+- Connector 内部预取数量可配置或有明确上限；字节上限属于后续增强；
 - callback/push Source 也能通过有界适配层响应 admission；
 - Kafka Connector 在业务回压期间仍满足 heartbeat/session 生命周期。
 
@@ -733,10 +804,7 @@ checkpoint completion and recovery
 
 ## 16. 当前开放问题
 
-- 全局 in-flight budget 与 Connector 预取、input queue、attempt output 和 Sink buffer 的具体配额关系；
-- `Record` metadata 与 Runtime Envelope 的边界；
 - Emit 成功后的引用数据 ownership 与复制规则；
-- Operator 实例是否允许被多个 Worker 并发调用，还是每个 lane 独立实例；
 - 用户回调的线程安全契约；
 - 第一版线性 Job Definition；
 - Skip 是否为允许推进 position 的终态；
@@ -750,7 +818,7 @@ checkpoint completion and recovery
 实现或评审 M1/M2 时必须能回答：
 
 - 一条记录从何时开始由 Runtime 承担 completion responsibility；
-- 每层预取、队列、暂存、请求和 retry 的数量/字节上限；
+- 每层预取、队列、暂存、请求和 retry 的数量上限，以及哪些部分暂不承诺字节上限；
 - attempt 失败时哪些输出可丢弃，哪些已转给 Sink；
 - Sink 入队、外部完成、输入终结和 position 提交是否严格区分；
 - 暂停、终止和 revoke 是否仍允许安全进度继续提交；

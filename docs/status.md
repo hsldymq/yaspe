@@ -93,6 +93,10 @@ package operator
 - 同一 reporter 的多次增量 Report 在 Coordinator drain 前最多产生一个 pending wakeup，重复或非法结果在进入 pending 存储前丢弃，活跃 reporter 总数受 in-flight 上限约束；
 - Sink Coordinator 将 item outcome 聚合成 work-level completion 后交给 Completion Tracker，后者负责输入终态、permit 和 position；capacity 与 completion 不强制共用普通 FIFO channel；
 - Sink 的等待 buffer、并发请求、重试项和 timer 都必须有界；
+- 第一版 Runtime 只公开 `Parallelism` 和 `MaxInFlightWorks` 两个数量限制；固定 Worker 复用执行不同 work，端到端 permit 从 Source admission 持续到 work terminal；
+- work 是输入的端到端状态与责任载体，不是 goroutine；同一 work 可经历多个 attempt，第一版固定 Worker 与 execution slot 一一对应；completed work 成功进入 terminal queue 后 slot 可复用，但 permit 不释放；
+- input/terminal/wakeup 等局部 queue 容量由 Runtime 内部推导，terminal queue 按 completed work 计数，第一版容量为 `min(MaxInFlightWorks, 2 * Parallelism)`；Sink 和 Source Connector 分别按 item/prefetch 数量限制自身容量；
+- 第一版不实现字节预算、动态借贷或单 work 输出数量限制，也不保证总驻留字节数有界；业务为 Sink 配置足够大的正常容量，后续按真实需求再增加字节或输出数限制；
 - 每次 Process 获得逻辑独立的 Collector，Process 返回后 Collector 失效；
 - Collector 仅允许在 Process 调用 goroutine 中串行使用，不保证线程安全；
 - Worker 将输出交给异步 Sink 后可以处理下一条输入，但输入 completion 持续到所有必需 Sink effect 完成；
@@ -109,6 +113,9 @@ package operator
 - 最终 FailJob 或宿主取消时，已被 Sink 接受的未定操作在可配置且受宿主 deadline 限制的关闭期限内等待；
 - 关闭期间仍更新 completion 和 safe position 并尽快提交，到期未确认操作不得标记为成功；
 - Connector 已读取但 Runtime 尚未接受的数据由 Connector 有界持有，不进入 record completion tracking；
+- Source Connector 读取外部原始数据，配置的 deserializer/parser 负责产生业务值 `T`，并在正式交接前有界持有；Runtime 取得 in-flight permit 后通过非阻塞 Reader 取走 `T`，再统一创建 `Record[T]`、内部 Envelope 和 Work；具体 Reader API 尚未确定；
+- 第一版 `Record[T]` 只有 `Value T`；Source 特有且业务需要观察的信息由 deserializer 放入 `T`，Map 只传播 transform 明确保留在输出类型中的信息，不提供无类型通用 metadata；
+- split、position、ownership generation、work identity、attempt、completion 和 permit 等正确性 metadata 永远留在 Runtime Envelope；event time 等到 window、watermark、timer 出现真实需求并明确传播语义后再评估；
 - 临时暂停时可保留有界未交接数据并在恢复后优先按 split 内原顺序交接，暂停期间不得扩大预取；
 - 未交接数据从属当前 split ownership，revoke、ownership 连续性无法确认或 Job 终止时丢弃，不产生 completion 或 position 推进；
 - 同一 split 重新分配给同一实例也属于新 ownership，不复用旧 ownership 的未交接缓存；
@@ -120,20 +127,19 @@ package operator
 - 多 Pod Kafka Source 早期使用 Kafka Consumer Group 协调 partition；
 - yaspe Runtime 决定 safe position，Kafka Connector 执行 offset commit；
 - 第一版目标是 record 级并行、单 record 内同步执行；
+- 第一版一个 Pipeline Worker、一个 execution slot 和一套独占的 Operator Chain 组成一条 execution lane；每条 lane 独立创建 Operator Chain，不跨 lane 共享 Operator 实例，同一实例只由所属 Worker 串行调用；
+- Job Definition 必须保留为每条 lane 创建 Operator Chain 所需的信息，具体 factory/构建 API 在第一版线性 Job Definition 设计中确定；
 - 不通过无限队列、无限 goroutine 或提前提交 position 换取吞吐。
 
 ## 当前开放问题
 
-- Record metadata 边界；
-- 全局 in-flight budget 与各局部队列容量的关系；
-- Operator 实例是否允许被多个 Pipeline Worker 并发调用；
 - 第一版线性 Job Definition。
 
 ## 下一步
 
 1. 以 `designs/0001-core-execution-model.md` 为唯一正式核心执行模型；
-2. 从正式 Design 第 16 节继续收敛开放问题，优先讨论 Sink API、容量预算和 Record metadata；
-3. 明确 Operator 实例并发、Skip 终态和 Kafka revoke 默认期限；
+2. 从正式 Design 第 16 节继续收敛开放问题，优先讨论第一版线性 Job Definition；
+3. 明确 Skip 终态和 Kafka revoke 默认期限；
 4. 在核心开放问题收敛前，尚不要实现 Worker Pool、Kafka 或完整 DAG。
 
 ## 工具链

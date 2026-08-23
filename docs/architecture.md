@@ -211,7 +211,7 @@ Record[T]
 
 - 表达 Operator 处理的类型化业务数据；
 - 作为 Source、Operator 和 Sink 之间的业务值容器；
-- 后续在明确设计后承载 event time 等属于数据本身的 metadata。
+- 第一版只承载 `Value T`。
 
 不负责：
 
@@ -221,7 +221,14 @@ Record[T]
 - 不承担 Runtime acknowledgment；
 - 不把 Kafka offset 当作所有 Source 的通用业务字段。
 
-当前 `Record` 只有 `Value` 是刻意的最小设计。是否增加 event time、headers 或 key，需要在相关阶段设计中决定继承和变换语义。
+当前 `Record` 只有 `Value` 是刻意的最小设计。Source 特有且业务需要观察的信息由
+deserializer 放入 `T`，而不是进入一个无类型的通用 metadata 容器。例如 Kafka Source
+可以按配置产出纯消息值，也可以产出包含 key、headers、topic 和 timestamp 的业务类型。
+Map 改变值类型时，只有 transform 明确保留在输出类型中的这些信息才继续向下游传播。
+
+第一版不增加通用 event time。文件逐行读取等 Source 可能根本没有事件时间，而外部系统
+提供的时间戳也未必等于业务事件时间。只有在 window、watermark 和 timer 等需求出现并
+定义完整传播语义后，才重新评估可选 event-time 字段。
 
 ### 7.2 Runtime Envelope
 
@@ -330,6 +337,11 @@ M1 的线性同步 Pipeline 以一条 Runtime 已接受的输入作为一次 wor
 任一 Operator 失败时，Runtime 丢弃该 attempt 尚未转移的最终输出，并在策略
 允许时用保留的原始输入重新执行整条 Chain。
 
+这里 work 是一条已接管输入的端到端状态与责任载体，不是 goroutine；同一 work 重试时可以
+经历多个 attempt。Runtime 预先创建固定 Pipeline Worker goroutine，第一版每个 Worker 对应
+一个 execution slot，并顺序复用执行不同 work。completed work 成功进入 terminal queue 后，
+Worker/slot 可以处理下一条，而该 work 的 in-flight permit 仍持续到最终终结。
+
 Chain 成功后，最终输出才转移给 Sink；之后的失败优先在 Sink 边界恢复，
 不重新执行 Operator Chain。末端暂存的数量和大小必须纳入端到端容量预算。
 这一边界只用于减少 Runtime 能够明确避免的重复，不使 FlatMap 成为事务，
@@ -339,6 +351,8 @@ Chain 成功后，最终输出才转移给 Sink；之后的失败优先在 Sink 
 在整组 Put 上并继续持有当前 completed work；它们不直接调用 Sink。每个 Sink 的独立
 Coordinator 消费 terminal queue 并调用 `Accept`，completion 路径也独立于这些 Worker，确保
 即使所有 Worker 都被回压阻塞，Sink 容量仍能继续释放并向上游传播进度。
+第一版内部默认容量为 `min(MaxInFlightWorks, 2 * Parallelism)`；这个倍数只用于吸收短暂
+完成突发，是可以根据 benchmark 调整的实现参数，不属于稳定公开语义。
 
 同一输入派生出的记录共同参与该输入的完成跟踪，但这种关联不等于
 外部事务原子性。输出被 Sink 接受后不能假定可以撤回，重试仍可能产生重复。
@@ -379,7 +393,7 @@ Runtime
 Connector 已从外部系统读取、但尚未完成受控交接的数据，仍由 Connector
 持有，不占用 Runtime 的 record-level in-flight permit，也不进入 completion tracking。
 这一边界允许 Kafka 批量 poll、网络预取和 callback Source 适配各自的物理读取模型，
-但 Connector 内部的未交接数据仍必须在数量和字节上有界。
+但 Connector 内部的未交接数据在第一版至少必须按数量有界；按字节限制属于后续增强。
 
 Job 临时暂停时，Connector 可以保留已读取的有界未交接数据，但不得
 继续扩大预取；恢复后应先按 split 内原顺序交接这些数据，再继续读取新数据。
@@ -407,6 +421,13 @@ split assignment/revoke、ownership 变化和宿主取消不伪装成业务 Reco
 新的数据交接；一旦 Runtime 已知当前 ownership 失效，就不得再接受该 ownership 的记录。
 
 这些条款固定 Source 驱动语义，不预先固定 Go 方法名、通知载体或内部缓冲实现。
+
+Source 数据进入业务类型的边界固定为：Connector 读取外部原始数据，配置的
+deserializer/parser 产生业务值 `T`，并在正式交接前由 Connector 有界持有。Runtime 取得
+in-flight permit 后通过非阻塞 Reader 取走 `T`，再统一创建 `Record[T]`、内部 Envelope 和
+Work；Source Connector 与 deserializer 都不创建或解释 Runtime Envelope。split、position、
+ownership generation、work identity、attempt、completion 和 permit 等正确性 metadata
+永远留在 Runtime 内部。具体 Reader 接口与方法名留待 Source API 设计确定。
 
 ### 7.6 Sink
 
@@ -536,6 +557,12 @@ Sink
 Different records       parallel across Workers
 One record's chain      synchronous in one Worker
 ```
+
+一个 Pipeline Worker、一个 execution slot 和该通道独占的 Operator Chain 实例共同组成一条
+`execution lane`。每条 lane 独立创建 Operator Chain，不与其他 lane 共享 Operator 实例；
+同一实例只由所属 Worker 串行调用。这样普通 Operator 不需要为 `Process` 并发调用加锁，
+并为未来的实例局部状态保留清晰边界。Job Definition 必须描述如何为每条 lane 创建 Chain，
+具体 factory API 留待第一版线性 Job Definition 设计确定。
 
 不负责：
 
@@ -1259,10 +1286,7 @@ State API      → specific backend implementation
 
 以下问题尚未定稿，应在阶段设计或原型中解决：
 
-- `Record` 除 `Value` 外应包含哪些 metadata；
-- 普通 Map 是否自动继承 event time、key 和 headers；
 - Operator 是否长期保留为接口，还是以 function adapter 为主；
-- Operator 实例是否由多个 Pipeline Worker 并发调用，还是每个 lane 独立实例；
 - 第一版 Job Definition 是线性 Pipeline 还是最小 DAG；
 - Skip 是否被视为允许推进 position 的终态；
 - M2 的 Runtime Envelope 和 position 是否采用泛型、opaque token 或内部 adapter；
