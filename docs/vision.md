@@ -185,7 +185,7 @@ yaspe 不默认所有记录全局有序。作业应明确选择无序执行、So
 
 ### 7.6 错误策略属于 Runtime
 
-Operator 返回错误和上下文，Runtime 根据明确策略决定 Fail、Skip、Retry 或 Dead Letter。重试不隐含回滚，涉及外部副作用时必须说明幂等或事务前提。
+用户函数在业务逻辑附近把可忽略错误显式收敛为 Filter 不保留、FlatMap 零输出或自定义 Operator 的正常零输出；未被吸收的 error 由 Runtime 根据 Job 级策略 Retry 或 FailJob。Runtime 不提供通用 Skip/Discard record 终态。重试不隐含回滚，涉及外部副作用时必须说明幂等或事务前提。
 
 ### 7.7 一致性声明必须附带边界
 

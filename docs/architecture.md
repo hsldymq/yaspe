@@ -276,7 +276,7 @@ Runtime Envelope[T]
 - 不自行创建 Worker Pool；
 - 不决定并行度；
 - 不拥有输入输出队列；
-- 不决定 Fail、Skip、Retry 或 Dead Letter；
+- 不决定 Job 级 Retry 或 FailJob；可忽略业务错误由用户函数显式收敛为正常零输出；
 - 不提交 Source position；
 - 不管理 Job 生命周期；
 - 不恢复 panic 并静默继续；
@@ -599,31 +599,32 @@ lane 创建 Chain。内置 Transformation 可以共享用户函数值，但每�
 
 ### 7.10 Failure Policy
 
-状态：`Planned`，M1 支持 FailJob/Skip，M2 扩展 Retry/Dead Letter。
+状态：`Planned`，M1 支持 FailJob，M2 扩展受控 Retry。
 
 职责：
 
-- 根据错误阶段、记录上下文和 attempt 决定 Runtime 行为；
+- 根据未被用户函数吸收的错误、失败阶段和 attempt 决定 Runtime 行为；
 - 将 Operator 的“发生错误”与 Runtime 的“如何处置”分离。
 
-候选终态：
+终态：
 
 ```text
 Success
-Skipped
-DeadLettered
 Failed
 Cancelled
 ```
 
-候选动作：
+动作：
 
 ```text
 FailJob
-SkipRecord
 RetryRecord
-SendToDeadLetter
 ```
+
+Runtime 不提供 Skip/Discard record 动作，也不在 Transformation 上提供 `OnError`。Filter
+不保留、FlatMap 返回零输出或自定义 Operator 不 Emit 并返回 nil 都是正常 Success；用户以
+这些方式在业务逻辑附近吸收可忽略错误。未被吸收的 error 才进入 Job 级 Failure Policy。
+未来 Dead Letter 应建模为显式业务输出、Side Output、分支或专用 Sink，而不是失败终态。
 
 重试不意味着回滚。只要此前已有 Emit 或外部副作用，就可能产生重复。策略必须了解失败阶段和下游能力。
 
@@ -873,7 +874,7 @@ M1 的关键限制：
 - 输出顺序在并行度大于 1 时默认不保证；
 - Source、队列和在途工作数量必须有界；
 - Sink 在 M1 可以同步完成；
-- FailJob 和 SkipRecord 由 Runtime 处理；
+- 未处理 error 由 Runtime 以 FailJob 处置；业务可忽略错误由用户函数收敛为正常零输出；
 - 还没有生产级 Source position 和 checkpoint。
 
 ## 11. M2 目标结构：Position、Completion 与生产 Connector
@@ -1104,13 +1105,12 @@ Operator returns error
 Runtime classifies failure stage
    ↓
 Failure Policy
-   ├── FailJob
-   ├── SkipRecord
    ├── RetryRecord (when safe/allowed)
-   └── Dead Letter (after DLQ succeeds)
+   └── FailJob
 ```
 
-Operator 不自行决定策略。M1 中 Operator Chain 失败会丢弃本次 work attempt
+用户函数可以把可忽略的业务错误转换为正常零输出；未被吸收的 error 不允许由 Runtime
+静默 discard。M1 中 Operator Chain 失败会丢弃本次 work attempt
 尚未转移给 Sink 的最终输出；已被 Sink 接受或用户在 Operator 内自行产生的
 外部副作用不在该撤销边界内。
 
@@ -1149,24 +1149,32 @@ Run returns
 ### 17.5 Kafka rebalance
 
 ```text
-Kafka Connector receives revoke(split, generation)
+Kafka Connector receives revoke(splits, generation, deadline)
    ↓
-Runtime stops new records for that ownership
+Runtime pauses all new business admission for this Kafka Source
    ↓
-drain or cancel split-scoped in-flight work
+for revoked splits: drain started/Sink-owned work; do not start queued work
    ↓
 compute safe continuous position
    ↓
 commit when protocol lifecycle permits
    ↓
 invalidate old generation
+   ↓
+resume retained/newly assigned splits
 ```
 
 旧 generation 的迟到完成不能推进新 owner 的 position。
 
-Revoke 开始后，Runtime 立即停止该 split 的新读取、新交接和尚未开始的 work。
-在 ownership 失效前允许在有限期限内收敛已开始和已被 Sink 接受的操作，
-并尽力提交连续 safe position。这一收尾不得无限阻塞 rebalance。
+Revoke 开始后，第一版暂停该 Kafka Source 所有 split 的新业务 admission，避免 retained split
+继续占用 Worker、permit 和 Sink capacity；heartbeat、session 和必要的 poll/control 仍继续。
+只有 revoked split 进入收尾，retained split 保留 ownership generation 和有界预取，收尾后
+恢复。尚未开始的 revoked work 不再启动；已开始的 work 可以完成 Chain、进入 Sink 并等待
+completion，已有 Sink-owned work 同样有限等待，以尽量填补 position gap、减少重放。
+
+默认 `RevokeDrainTimeout` 为 30 秒，实际 deadline 不得超过 Connector 从 Kafka 协议和客户
+端生命周期获得的更早期限，并需为最终 commit 和控制回调返回预留安全时间。到期未知的
+Sink operation 不得标记成功，只提交连续 safe position。
 
 Ownership 失效后：
 
@@ -1175,6 +1183,11 @@ Ownership 失效后：
 - 正在计算的 work 可被通知取消，其迟到完成的末端输出不得再转移给 Sink；
 - 已被 Sink 接受的操作无法假定可以撤销，即使迟到成功也不得推进新 ownership 的 position；
 - 已完成但未能在旧 ownership 有效期内提交的进度不得在失效后补交。
+
+Eager rebalance 把全部 revoked assignment 交给同一流程；cooperative rebalance 只处理实际
+移动的子集。被 revoke 的 split 即使重新分配给同一实例也创建新 generation，并从 Kafka
+committed offset 恢复；retained split 不重置。split lost 表示 ownership 可能已经转移，
+此时立即 fence、清理且不再提交旧 position，不执行正常 drain。
 
 新 owner 从最后成功持久化的 safe position 恢复。未提交但已产生外部效果的记录
 可能重复，这是当前 at-least-once 保证的已知边界，不得通过让旧 owner 跨
@@ -1297,9 +1310,7 @@ State API      → specific backend implementation
 以下问题尚未定稿，应在阶段设计或原型中解决：
 
 - Operator 是否长期保留为接口，还是以 function adapter 为主；
-- Skip 是否被视为允许推进 position 的终态；
 - M2 的 Runtime Envelope 和 position 是否采用泛型、opaque token 或内部 adapter；
-- Kafka rebalance 时允许多长时间 drain；
 - 稳定 Operator identity 从何时开始强制要求。
 
 这些问题出现在本文中不代表应当现在一次性解决。当前阶段只解决会影响当前代码的部分。

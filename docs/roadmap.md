@@ -1,7 +1,7 @@
 # yaspe Roadmap
 
 文档状态：Living Document  
-最后更新：2026-08-01  
+最后更新：2026-08-24
 关联文档：[vision.md](vision.md) · [architecture.md](architecture.md) · [status.md](status.md)
 
 ## 1. Roadmap 的目的
@@ -99,7 +99,7 @@ M11 分布式执行（探索）
 - 定义 Record、Source、Operator、Collector、Sink、Job 和 Runtime 的职责；
 - 定义一个输入产生零个、一个或多个输出的语义；
 - 定义部分 Emit 后失败的行为；
-- 定义 Fail、Skip、Retry 和 Dead Letter 的概念边界；
+- 定义用户函数吸收业务错误与 Runtime Retry/FailJob 的概念边界；
 - 定义正常结束、失败、取消和资源释放语义；
 - 确定 Go 1.27 最低版本和工具链策略；
 - 建立测试、benchmark、race test 和文档目录基线。
@@ -119,6 +119,7 @@ M11 分布式执行（探索）
 - 关键决策已通过 ADR 记录；
 - 各概念的所有权和生命周期没有已知矛盾；
 - 设计明确指出第一版提供和不提供的保证；
+- 影响 M1/M2 公共 API、所有权、并发和恢复正确性的开放问题已经收敛；局部私有实现选择可留给受约束原型；
 - `status.md` 能准确指向下一项具体工作。
 
 ## 5. M1：有界并发的 Stateless Runtime
@@ -141,7 +142,7 @@ M11 分布式执行（探索）
 - 有界输入队列和可配置 Worker Pool；
 - 不同 record 并行、单个 record 内同步执行的第一版模型；
 - Runtime 负责并发，Operator 不自行创建 goroutine；
-- FailJob 和 SkipRecord 错误策略；
+- FailJob 错误策略，以及用户函数将可忽略业务错误收敛为正常零输出的语义；
 - context 取消、优雅停止和 goroutine 回收；
 - 基础执行指标；
 - deterministic test runner 或等价测试设施；
@@ -162,7 +163,7 @@ M11 分布式执行（探索）
 - `Parallelism>1` 时不承诺输出顺序，并在 API 中明确表达；
 - 队列满时 Source 停止读取，内存不会随输入无限增长；
 - FailJob 能停止新输入并回收所有 Runtime goroutine；
-- SkipRecord 不终止其他独立记录；
+- Filter、FlatMap 和自定义 Operator 的正常零输出不会终止其他独立记录；
 - Map、Filter、FlatMap 的错误和部分输出语义有完整测试；
 - `go test -race ./...` 通过；
 - benchmark 记录吞吐、延迟、分配次数和并发度，不只记录单一 ops/s；
@@ -185,11 +186,11 @@ M11 分布式执行（探索）
 - 与具体 Connector 解耦的 Source position 抽象；
 - record acknowledgment 和终态模型；
 - 并发完成、连续 position 推进；
-- 成功、Skip、Dead Letter 和未解决失败对 position 的不同影响；
+- 正常成功（包括零输出）和未解决失败对 position 的不同影响；
 - Kafka Source Connector；
 - 使用 Kafka Consumer Group 协调多 Pod 的 partition ownership；
 - partition assignment、revocation 和 ownership generation；
-- rebalance 时停止读取、在途任务 drain/cancel 和安全 position 提交；
+- rebalance 时暂停 Source 全部新业务 admission、保持 session/control、对 revoked split 执行有期限的在途任务 drain/cancel 和安全 position 提交；
 - 旧 ownership 完成的任务不得推进当前 position；
 - Kafka poll、heartbeat/session 与 Runtime 背压的协作；
 - 禁用或约束不理解 Runtime 完成语义的自动 offset 提交；
@@ -198,7 +199,6 @@ M11 分布式执行（探索）
 - batch flush、成功、部分失败和关闭语义；
 - ClickHouse Sink Connector 的第一版；
 - 有上限的 Retry 策略及 backoff；
-- Dead Letter Sink；
 - Source lag、in-flight、batch 和 commit 指标；
 - 在指定 position 和 batch 阶段进行故障注入。
 
@@ -216,9 +216,10 @@ M11 分布式执行（探索）
 - Sink 仅入队但尚未落库时，输入不会被标记完成；
 - batch 写入失败不会被报告为成功；
 - Retry 是否可能产生重复输出有清楚说明和测试；
-- Dead Letter 写入成功后才能按配置终结原记录；
 - 多个实例使用同一 Consumer Group 时，同一 partition 不会被 yaspe 主动重复分配；
 - partition 被 revoke 后，旧 ownership 不会继续推进其 committed position；
+- 默认 30 秒 revoke drain 受 Connector 实际 rebalance deadline 限制；started/Sink-owned work 在期限内收敛，queued work 不启动；
+- eager 和 cooperative rebalance 都通过 revoked split 集合正确处理，retained split 不重置，lost split 不执行旧 position commit；
 - 队列饱和和 Sink 变慢时，Kafka session 不会因错误的阻塞模型持续发生非预期 rebalance；
 - graceful shutdown 会停止新读取，并在期限内处理或明确放弃未完成的在途记录；
 - Kafka rebalance、取消和关闭时不会静默丢弃已确认但未提交的状态；
@@ -659,7 +660,7 @@ docs/designs/0001-core-execution-model.md
 - Map、Filter 和 FlatMap 的输出模型；
 - 多次 Emit 和部分 Emit 后失败的语义；
 - record 级并发、队列和背压；
-- FailJob、SkipRecord、Retry 和 Dead Letter；
+- 用户函数吸收业务错误、Retry 和 FailJob；
 - 正常结束、取消和优雅停止；
 - 一条记录的完成条件；
 - 第一版明确不提供的事务与一致性保证；

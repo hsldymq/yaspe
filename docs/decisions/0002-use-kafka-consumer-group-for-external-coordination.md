@@ -27,7 +27,7 @@ Kafka Consumer Group
 yaspe Runtime
     - record 完成状态
     - partition 内连续完成位置
-    - Fail/Skip/Retry/Dead Letter 终态
+    - 正常成功（包括零输出）、Retry 中和最终失败状态
     - 背压、取消和在途任务管理
 
 Kafka Connector
@@ -39,6 +39,17 @@ Kafka Connector
 Kafka Connector 不得根据最新读取位置提前提交 offset。自动提交必须禁用，或者被配置为只提交由 Runtime 明确确认的安全位置。
 
 每次 partition ownership 应具有可区分的 generation/epoch。partition 被 revoke 后，旧 ownership 下迟到完成的任务不得推进当前 committed position。
+
+第一版 revoke 收尾期间暂停该 Kafka Source 所有 partition 的新业务 admission，但继续
+heartbeat、session 和必要的 poll/control。只有 revoked partition 执行有限 drain、safe offset
+commit、预取清理和 generation fence；retained partition 保留当前 ownership 和有界预取。
+尚未开始的 revoked work 不再启动，已开始的 work允许完成并进入 Sink，Sink-owned work
+等待 completion。默认 drain timeout 为 30 秒，且不得超过 Connector 实际可用的 rebalance
+deadline；到期未知结果不得标记成功。
+
+该机制同时处理 eager 的全量 revoked 集合与 cooperative 的部分集合。被 revoke 的 partition
+即使重新分配给同一实例也创建新 generation 并从 committed offset 恢复；lost partition
+立即 fence、清理且不再提交旧 position。
 
 ## 原因
 
@@ -87,6 +98,8 @@ Kafka Connector 不得根据最新读取位置提前提交 offset。自动提交
 - 扩容、缩容和 rolling update 不产生超出已声明保证的数据缺失；
 - partition revoke 后旧 generation 不得提交 position；
 - rebalance 时存在在途记录和待 flush batch 的场景有故障测试；
+- eager 全量 revoke、cooperative 部分 revoke、retained partition 和 lost partition 均有测试；
+- revoke drain 默认期限、Connector 更早 deadline 和到期 unknown 均有确定性测试；
 - 队列饱和和慢 Sink 不会持续触发非预期 session 失效；
 - 强制终止 Pod 后，新 owner 能从已提交位置继续；
 - 重复处理的可能位置可以观测和解释；

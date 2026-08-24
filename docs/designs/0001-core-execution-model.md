@@ -50,7 +50,7 @@ Kafka
 
 ### 1.2 阶段落地边界
 
-- M1：非阻塞 Memory Reader、有界 permit 和队列、完整 work-attempt 边界、末端暂存、同步 Memory Sink、FailJob/Skip 以及取消回收；
+- M1：非阻塞 Memory Reader、有界 permit 和队列、完整 work-attempt 边界、末端暂存、同步 Memory Sink、FailJob 以及取消回收；
 - M2：Kafka split/position/ownership、异步批量 Sink、completion tracker、生产级重试恢复和 rebalance 收尾；
 - M1 的接口和所有权边界不得阻断 M2，但不得为了远期目标提前实现 Kafka、生产 Sink 或 checkpoint。
 
@@ -65,7 +65,7 @@ Operator 只描述业务计算：一条输入产生零条、一条或多条输�
 - Collector 和内部 edge；
 - 队列、permit、背压和取消；
 - completion、safe position 和 generation fence；
-- Fail、Skip、Retry、Dead Letter；
+- Retry、FailJob 和宿主取消；
 - Source、Sink 和 Job 生命周期。
 
 Operator 不创建 Worker Pool，不提交 Source position，也不决定 Job 级恢复策略。
@@ -672,6 +672,16 @@ Sink 未明确成功时不能推进 position。结果未知时，为避免丢失
 
 用户失败策略可以根据错误、阶段、历史尝试、当前时段和业务信息决定等待、重试或最终 FailJob。
 
+Runtime 不提供 Skip/Discard record 终态，也不在每个 Transformation 上提供 `OnError`。
+用户函数负责在业务逻辑附近识别可忽略的业务错误，并把它收敛为正常计算结果：Filter 可以
+返回不保留，FlatMap 可以返回零输出，自定义 Operator 可以不 Emit 并返回 nil。Map 的成功
+语义保持严格一进一出；若某项计算可能在业务错误时产生零输出，应使用 FlatMap 或自定义
+Operator 表达。只有未被用户吸收的 error 才进入 Job 级 Retry/FailJob 策略。
+
+正常零输出属于 Success，允许输入 completion 和连续 safe position 推进；它不被 Runtime
+伪装成独立的 Discarded 终态。将来需要保留坏数据时，应作为显式业务输出、Side Output、
+分支或专用 Sink 设计，而不是通过通用失败策略静默丢弃。
+
 重试可以在时间上持续，但数据、goroutine、队列、timer 和并发请求始终有界，并且 Runtime 始终响应宿主取消。
 
 ### 10.2 暂停
@@ -722,13 +732,27 @@ Runtime 退出后不得遗留 Source、Worker、Sink 或 retry goroutine。
 
 ## 12. Kafka Rebalance
 
-Revoke 开始后，Runtime 立即停止该 split 的新读取、新交接和尚未开始的 work。在 ownership 失效前，允许在有限期限内：
+Revoke 开始后，第一版暂停该 Kafka Source 所有 split 的新业务 admission，让现有资源优先
+用于收尾；Kafka heartbeat、session 和必要的 poll/control 处理必须继续运行。暂停全局
+admission 不等于撤销所有 ownership：只有 Kafka 报告的 revoked split 进入 drain、commit、
+缓存清理和 generation fence，retained split 保留当前 ownership generation 和有界未交接
+缓存，rebalance 收尾后恢复 admission 并优先交接已有缓存。
+
+对于 revoked split，Runtime 冻结收尾集合：尚未开始 Operator Chain 的 work 不再启动；
+已经开始的 work 允许在期限内完成 Chain、把 terminal output 原子交给 Sink，并等待 Sink
+completion；已经被 Sink 接受的操作继续等待明确结果。正常零输出且已经完成的 work 保留
+Success。这样可以尽量填补并发处理形成的 position gap，减少新 owner 重放已经产生 Sink
+effect 的较大 position。在 ownership 失效前，Runtime 允许：
 
 - 收敛已开始的 Chain；
+- 将这些 Chain 成功形成的 terminal output 交给 Sink；
 - 等待已被 Sink 接受的操作；
 - 推进并提交连续 safe position。
 
-收尾不得无限阻塞 rebalance。
+默认 `RevokeDrainTimeout` 为 30 秒。实际收尾 deadline 取用户配置和 Kafka Connector 当前
+可用 rebalance deadline 中较早者，并为最终 safe position commit、控制回调返回和协议推进
+预留安全时间；收尾不得无限阻塞 rebalance。期限到期时取消仍未交给 Sink 的 work，Sink-owned
+unknown 不得标记成功，只提交当时连续的 safe position。
 
 Ownership 失效后：
 
@@ -740,6 +764,17 @@ Ownership 失效后：
 - 已完成但未在旧 ownership 内提交的进度不得失效后补交。
 
 新 owner 从最后成功持久化的 safe position 恢复。旧 ownership 已产生外部效果但未提交的记录可能重复，这是 at-least-once 边界。
+
+Kafka offset 按 consumer group、topic 和 partition 独立保存，committed offset 表示下一条
+应读取的 offset；Connector 负责把 Runtime 的最后连续完成 position 转换成该语义。被
+revoked 的 split 即使重新分配给同一实例也创建新 generation、丢弃旧预取并从 committed
+offset 恢复；retained split 不重置读取位置或 generation。
+
+同一机制同时支持 eager 和 cooperative rebalance：eager 通常把全部当前 assignment 作为
+revoked 集合处理，cooperative 只处理实际移动的子集。正确性不得依赖 cooperative 一定启用，
+但生产默认可以优先使用 cooperative 以减少暂停和重放。Kafka 报告 split 已 lost 时，旧
+ownership 可能已被其他 Consumer 接管，Connector 必须立即 fence generation、清理本地缓存
+且不再提交旧 position，不执行正常 revoke drain。
 
 ## 13. 长期演进
 
@@ -847,13 +882,40 @@ checkpoint completion and recovery
 
 ## 16. 当前开放问题
 
-- Emit 成功后的引用数据 ownership 与复制规则；
-- 用户回调的线程安全契约；
-- Skip 是否为允许推进 position 的终态；
-- Kafka revoke 的默认收尾期限；
-- 失败策略的具体动作、等待节奏和恢复范围；
+当前 M0 的退出目标是先收敛所有影响 M1/M2 公共 API、所有权、并发和恢复正确性的设计，
+再开始 Runtime 与生产 Connector 编码。局部命名、私有类型组织和可由受约束原型验证的实现
+选择不需要在文档中预先固定。
+
+### 16.1 M1 实现前必须收敛
+
+- `Collector.Emit` 成功或失败后的 Record、slice、map、pointer 等引用数据 ownership 与复制规则；
+- 共享用户函数、lane-local Operator、Collector、Source/Sink callback 的线程安全契约；
 - `Collector.Emit` 的 context 长期显式传递还是绑定到 Process scope；
-- M2 position 和 Runtime Envelope 使用泛型、opaque token 还是内部 adapter。
+- 用户函数 panic 的恢复、stack 记录和 FailJob 语义；
+- M1 FailJob 的停止顺序、started work、terminal output、同步 Memory Sink 和根因传播；
+- Source Reader/admission 的最小接口、Memory Source 生命周期和 completion responsibility 起点；
+- `JobBuilder`、`Stream[T]`、Transformation、factory、`Build` 的具体公开 API 和内部类型擦除边界；
+- Memory Sink、M1 指标、确定性测试、race/leak 测试和 benchmark 的实现前审核。
+
+### 16.2 M2 实现前必须收敛
+
+- Retry 的适用错误、backoff/jitter、次数或持续时间、耗尽动作和 Job 级恢复范围；
+- Source split/position 的公共或内部表示，以及 Kafka committed offset 转换边界；
+- Runtime Envelope 中 split、position、generation、work、attempt 和 completion identity 的组织；
+- 非阻塞 Reader、availability notification、Source control event 和 Connector Open/Close 的最终接口；
+- Sink `Open/Accept/Close`、原子接管、reporter、capacity notification 和 callback slice ownership 的最终接口；
+- `SinkSucceeded`、`SinkNotApplied`、`SinkUnknown`、部分成功和迟到/重复 callback 的精确动作；
+- Completion Tracker 的零/多输出、permit 释放、position gap 和 generation fence；
+- Kafka 客户端适配、poll/pause/commit、assignment/revoke/lost 和 commit 失败规则；
+- ClickHouse batch、flush、部分失败、unknown effect 和关闭 deadline；
+- M2 指标、故障注入矩阵和 at-least-once 声明审核。
+
+### 16.3 可由原型细化但不得改变语义的事项
+
+- Transformation 私有接口、ID、引用和异构存储方式；
+- Job/Source/Sink definition 与运行实例的最终 Go 类型名；
+- 有界内部 queue 的具体数据结构和不改变公开保证的容量微调；
+- 测试工具、fake clock 和 fault injection hook 的 package 组织。
 
 ## 17. 实现前审核点
 
@@ -916,6 +978,8 @@ checkpoint completion and recovery
 - 用户函数捕获和外部依赖的并发安全、幂等性与副作用不由实例隔离保证；
 - `To` 添加 Sink Transformation，`Build` 校验并快照为不可变 Job；
 - 第一版 Build 只接受单 Source、线性 Operator Chain 和单 Sink，内部引用模型保留未来 DAG 演进能力。
+- Runtime 不提供 Skip/Discard record 动作或 Transformation `OnError`；可忽略业务错误由用户函数收敛为正常零输出；
+- 未被用户函数吸收的 error 只进入 Job 级 Retry/FailJob 策略，正常零输出按 Success 完成并可推进连续 position。
 
 ### 18.5 对潜在冲突的统一表述
 

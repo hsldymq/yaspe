@@ -119,7 +119,11 @@ package operator
 - 临时暂停时可保留有界未交接数据并在恢复后优先按 split 内原顺序交接，暂停期间不得扩大预取；
 - 未交接数据从属当前 split ownership，revoke、ownership 连续性无法确认或 Job 终止时丢弃，不产生 completion 或 position 推进；
 - 同一 split 重新分配给同一实例也属于新 ownership，不复用旧 ownership 的未交接缓存；
-- revoke 后对该 split 进行有限收尾并尽力提交 safe position，ownership 失效后通过 generation fence 拒绝旧任务推进或提交 position；
+- revoke 期间第一版暂停该 Kafka Source 所有 split 的新业务 admission，但 heartbeat、session 和必要的 poll/control 继续；只对 revoked split 收尾，retained split 保留 ownership generation 和有界预取；
+- revoked split 尚未开始的 work 不再启动；已开始的 work 可以完成 Chain、进入 Sink 并等待 completion，已有 Sink-owned work 同样有限等待，以填补 position gap 并减少重放；
+- `RevokeDrainTimeout` 默认 30 秒，实际 deadline 受 Connector 可用 rebalance deadline 上限约束并为最终 commit/回调返回预留时间；到期 unknown 不标记成功，只提交连续 safe position；
+- ownership 失效后通过 generation fence 拒绝旧任务推进或提交 position；被 revoke 的 split 即使重新分配给同一实例也从 committed offset 创建新 generation，retained split 不重置；
+- 同一机制支持 eager 的全量 revoked 集合和 cooperative 的部分集合；split lost 时立即 fence、清理且不再提交旧 position，不执行正常 drain；
 - 暂停业务数据交接不等于停止 Kafka session/heartbeat 维护；
 - 第一版面向 Runtime 采用非阻塞 Reader，通过可等待的可用性通知避免忙轮询；
 - Connector 内部适配外部阻塞 I/O、批量读取和 session 维护，Runtime 取得 permit 后才取走记录并完成责任交接；
@@ -133,19 +137,23 @@ package operator
 - 内置 Transformation 可以共享用户函数值，但 Runtime 为每条 lane 创建独立 Operator 包装实例；函数捕获和外部依赖的并发安全、幂等性及副作用由用户负责；
 - `To` 只添加 Sink Transformation，`Build` 校验当前拓扑并创建不可变 Job 快照；Builder 后续变化不影响已构建 Job，Builder 本身不保证并发安全；
 - 第一版 Build 只接受单 Source、零个或多个 Operator Transformation、单 Sink 组成的无分支线性链；未来通过放宽校验和增加图编译阶段支持 DAG；
+- Runtime 不提供 `SkipRecord`、`DiscardRecord` 或 Transformation `OnError`；用户函数在业务逻辑附近把可忽略错误收敛为 Filter 不保留、FlatMap 零输出或自定义 Operator 的正常零输出；
+- Map 的成功语义保持严格一进一出；未被用户函数吸收的 error 只进入 Job 级 Retry/FailJob 策略；正常零输出属于 Success，可终结输入并推进连续 safe position；
+- Dead Letter 未来通过显式业务输出、Side Output、分支或专用 Sink 建模，不作为 Runtime 失败终态；
 - 不通过无限队列、无限 goroutine 或提前提交 position 换取吞吐。
 
 ## 当前开放问题
 
-- Skip 是否为允许推进 position 的终态；
-- Kafka revoke 的默认收尾期限。
+- M1：Emit 引用数据 ownership、回调并发、Collector context、panic/FailJob、Source Reader 和 Job API 定稿；
+- M2：Retry、position/Envelope、异步 Sink/completion、Kafka/ClickHouse Connector 和故障验证定稿。
 
 ## 下一步
 
 1. 以 `designs/0001-core-execution-model.md` 为唯一正式核心执行模型；
-2. 从正式 Design 第 16 节继续收敛开放问题，优先明确 Skip 终态；
-3. 随后明确 Kafka revoke 默认期限；
-4. 在剩余核心开放问题收敛前，尚不要实现 Worker Pool、Kafka 或完整 DAG。
+2. 按正式 Design 第 16 节顺序，先明确 Emit 成功/失败后的引用数据 ownership 与复制规则；
+3. 依次收敛 M1 的并发/context/panic/FailJob/Reader/Job API，再收敛 M2 的 Retry、position、Sink 和 Connector；
+4. 完成测试、指标、故障注入和交付保证审核后结束 M0，再开始 M1/M2 编码；
+5. 完整 DAG、Side Output、状态、checkpoint 和 exactly-once 仍按后续里程碑推进。
 
 ## 工具链
 
