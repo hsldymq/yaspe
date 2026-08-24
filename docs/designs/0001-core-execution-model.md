@@ -1,7 +1,7 @@
 # 0001：核心执行模型
 
 状态：Accepted（已确定条款作为当前设计；“开放问题”仍待后续收敛）
-最后更新：2026-08-24
+最后更新：2026-08-25
 适用阶段：M0–M2
 
 > 本文件是当前正式 Design，由多轮设计讨论与
@@ -347,6 +347,28 @@ Collector becomes invalid
 - 具体实现可以在同步 Chain 中直接调用下一个 Operator，也可以在明确边界处等待容量；
 - yaspe 不承诺所有端到端背压都必须表现为 `Emit` 长期阻塞。
 
+### 5.4 Emit 值的 ownership 与复制
+
+`Record[T]` 按值传递不表示其引用数据被复制。`T` 可以包含 slice、map、pointer、interface，
+以及由这些值间接引用的任意对象；Runtime 无法对任意 `T` 实施通用、安全且语义正确的深拷贝。
+第一版采用成功交接即转移 ownership 的约定：
+
+- `Emit` 成功时，当前 `Record[T]` 及其可达引用数据的 ownership 立即转给 Runtime，不延迟到
+  `Process` 返回；
+- 调用方从成功的 `Emit` 返回起不得再修改、复用或释放相关引用数据和 backing storage，也
+  不得将其放回对象池；普通变量随后改为指向其他值不属于复用；
+- `Emit` 失败表示本次输出未被接受，ownership 仍属于调用方，调用方可以修改、复用或释放
+  相关数据；此前成功 Emit 的其他输出不受这次失败影响；
+- Runtime 默认不复制 `T`，也不提供通用 copier/serializer。需要复用原存储的用户代码必须
+  在 Emit 前自行创建独立值；
+- Runtime 和后续接收方取得生命周期管理责任，但把业务值视为逻辑不可变，不依赖 ownership
+  对其原地修改。
+
+该规则是 Go 类型系统无法完全强制的实现约定。成功 Emit 后仍通过别名修改或复用数据属于
+用户实现错误；yaspe 不保证检测或阻止，也不保证此时的输出内容、确定性或并发安全。可能结果
+包括已暂存输出被覆盖、多次输出意外共享最终内容、data race，以及对象池提前复用造成的数据
+污染。race detector 只能发现其中一部分并发违规。
+
 ## 6. Operator Chain 与 work-attempt 边界
 
 ### 6.1 两个观察层级
@@ -568,6 +590,59 @@ sealed && pending == 0
 ```
 
 最终实现不必采用同名字段，但必须避免 pending 暂时为零、attempt 尚可能继续产生输出时提前完成。
+
+### 7.6 有限关闭与迟到事件隔离
+
+Sink 一旦以 `SinkAccepted, nil` 接管一个 work 的输出，就承担把所有 item 推进到明确结果的
+责任。关闭不能把“已接管但仍在内部 buffer”解释为可以丢弃；buffer、已组 batch 和外部
+in-flight 请求都属于有限 drain 的范围。
+
+Runtime 关闭 Sink 时采用以下顺序：
+
+```text
+停止新的 Accept
+    ↓
+Sink 在 Close deadline 内 flush 已接管 buffer
+并等待外部 in-flight 请求
+    ↓
+逐 item 形成 Succeeded / NotApplied / Unknown
+    ↓
+deadline 到期或 drain 完成后，使 reporter/notifier 失效隔离
+    ↓
+释放 Connector 与 Runtime 协调资源
+```
+
+结果必须表达外部事实，而不是为了结束关闭而选择方便的状态：
+
+- 明确完成外部效果的 item 报告 `SinkSucceeded`；
+- Connector 能证明尚未提交或取消发生在外部效果之前的 item 报告 `SinkNotApplied`；内部
+  buffer 在释放前必须先以该事实完成报告；
+- 已发出请求但在 deadline 内无法确认效果的 item 报告 `SinkUnknown`；超时本身不能证明
+  `NotApplied`；
+- `Close` 返回的整体 error 只表达关闭过程或资源释放结果，不能替代每个已接管 item 的
+  completion 事实，也不能授权静默丢弃 buffer。
+
+`Close` 是有期限的尽力完成，不是无限等待。Connector 必须停止自身能够控制的 admission、
+goroutine、timer、内部队列和 callback 注册，并在 deadline 内尽量收敛全部已接管 item；但
+yaspe 不要求 Connector 证明外部客户端在 `Close` 返回后绝不触发迟到 callback。
+
+Runtime 在关闭边界将相关 reporter 和 notifier 标记为失效（fence）。这里的 fence 是结果资格
+隔离，不是终止 callback 或撤销外部效果：对象仍可被迟到 callback 安全调用，但 fence 生效后
+尚未应用的事件只产生有界诊断，不得阻塞、panic、重新终结 work、释放 permit 或推进 safe
+position。fence 与结果应用必须在同一串行协调路径中建立明确顺序，避免 callback 先观察 active、
+再越过并发 fence 提交结果的 check-then-act 竞态。迟到 callback 自身持有的轻量 reporter 可以
+自然存活，但 Runtime 不为它保留完整 work、Sink Coordinator 或 position tracker。
+
+callback/push Source 采用同一责任划分：Connector 有界停止自身可控的接收与缓存，Runtime 在
+admission/ownership 失效后拒绝迟到数据和 availability notification。外部回调线程始终不能
+绕过 Connector 边界直接修改 Runtime 状态。
+
+关闭时的本地完成进度与外部 Source commit 仍然分离。只有 fence 前已经应用、并在 split 内
+形成连续前缀的成功结果才能推进 safe position；还必须成功持久化该位置，重启后才能从其后
+恢复。例如 Kafka offset 120–140 已连续完成，而 141–150 在关闭期限内仍为 `NotApplied` 或
+`Unknown`，最多提交 next offset 141；若该 commit 也未成功，恢复位置会早于 141，但绝不能
+因为 Sink 曾接管 141–150 而跳到 151。`Unknown` 或尚未提交的成功效果可能在恢复后重复，这是
+当前 at-least-once 边界。
 
 ## 8. 端到端回压与资源预算
 
@@ -831,6 +906,9 @@ checkpoint completion and recovery
 - position 只推进到 split 内连续允许终结的位置；
 - 旧 generation 迟到结果不污染新 ownership；
 - Runtime 管理的 goroutine 和等待路径最终响应取消并回收。
+- Sink 关闭会在 deadline 内 drain 所有已接管 item，而不只处理当前外部请求；不能完成的 item
+  按可证明事实进入 `SinkNotApplied` 或 `SinkUnknown`，不得静默丢弃；
+- reporter/notifier 失效后仍可被迟到 callback 安全调用，但不得再推进 completion 或 position。
 
 ### 14.2 第一版不保证
 
@@ -858,15 +936,21 @@ checkpoint completion and recovery
 - Connector 阻塞 I/O 能被取消或通过受控关闭结束；
 - Runtime 退出后不存在 Source、Worker、Sink 或 retry goroutine 泄漏；
 - deadline 到期的未知 Sink operation 不被错误标记成功。
+- `Close` 返回后 Connector 自身可控的 goroutine、timer、队列和 callback 注册已经有界收敛；
+  外部客户端迟到调用只命中失效的轻量 reporter/notifier，不保留完整 Runtime 协调状态；
 
 ### 15.3 attempt、Sink 与 completion
 
 - attempt 失败不会把 terminal output 部分交给 Sink；
+- Emit ownership 契约测试覆盖成功后发送方不得复用、失败后仍可复用，以及内置 Operator 不在
+  成功 Emit 后修改输出；测试不得宣称能够检测所有违反契约的用户代码；
 - Sink 整组交接不会发生部分责任转移；
 - 乱序、迟到和重复 callback 不会重复终结或释放 permit；
 - 零输出 work 能直接完成；
 - 多输出 work 只在全部必要 effect 完成后终结；
 - Sink 入队、外部完成、输入终结和 position 提交可以分别观测和测试。
+- 关闭测试覆盖已接管 buffer、外部 in-flight、deadline 前部分成功、可证明未生效、结果未知、
+  fence 前后并发 callback，以及 `Close` error 不能替代逐 item completion；
 
 ### 15.4 position 与 ownership
 
@@ -890,8 +974,6 @@ checkpoint completion and recovery
 
 ### 16.1 M1 实现前必须收敛
 
-- `Collector.Emit` 成功或失败后的 Record、slice、map、pointer 等引用数据 ownership 与复制规则；
-- 共享用户函数、lane-local Operator、Collector、Source/Sink callback 的线程安全契约；
 - `Collector.Emit` 的 context 长期显式传递还是绑定到 Process scope；
 - 用户函数 panic 的恢复、stack 记录和 FailJob 语义；
 - M1 FailJob 的停止顺序、started work、terminal output、同步 Memory Sink 和根因传播；

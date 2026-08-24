@@ -17,13 +17,18 @@
 - Vision 管长期目标，Roadmap 管能力顺序，Architecture 管跨阶段结构，ADR 管长期取舍，Design 管具体契约，Status 管当前断点，代码和测试证明已实现行为；
 - `Accepted` Design 不等于 `Implemented`，`Implemented` 不等于 `Verified`；
 - 不跳过 Status 中尚未收敛的前置决策直接实现受其影响的能力；
+- 讨论结论只有在用户明确确认并明确要求更新文档后才能写入项目记忆；局部同意、倾向或追问
+  不得视为定稿，完整门槛见 [Documentation Governance §4.1](docs/governance.md#41-用户确认与文档更新门槛)；
+- 文档记录长期有效的架构、契约、考量、取舍、实现规划和验证证据，不记录会话过程或修改
+  流水；避免流水账不等于省略必要理由，详见 [Documentation Governance §2.8](docs/governance.md#28-持久知识而非讨论流水)；
 - 不在多个文档中维护同一规则的完整副本，摘要必须链接权威位置；
 - 不悄悄改写已接受 ADR 的历史；改变决定时新增替代记录并标记 `Superseded`；
 - 不把未来规划、概念 API 或候选结构描述成当前实现；
 - 保留用户已有的未提交修改，并先理解与当前任务重叠的 diff。
 
-## 形成决定或实现后
+## 经用户确认并要求落盘后
 
+满足 [Documentation Governance §4.1](docs/governance.md#41-用户确认与文档更新门槛) 后，
 结束当前工作前：
 
 1. 更新权威 Design；
