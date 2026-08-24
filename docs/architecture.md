@@ -1,7 +1,7 @@
 # yaspe Living Architecture
 
 文档状态：Living Document  
-最后更新：2026-08-23
+最后更新：2026-08-24
 当前里程碑：M0 — 核心语义与项目基线  
 关联文档：[Vision](vision.md) · [Roadmap](roadmap.md) · [Current Status](status.md)
 
@@ -86,7 +86,7 @@ Definition Plane 让用户表达“计算什么”，不直接决定 goroutine�
 职责：
 
 - 表达一份完整流处理作业；
-- 持有 Source、Operator 连接关系、Sink 和作业级配置；
+- 由 `JobBuilder` 持有 Source、Transformation、Sink 和作业级配置；
 - 作为编译与运行入口；
 - 保持声明式，不在构建过程中启动计算。
 
@@ -100,14 +100,19 @@ Definition Plane 让用户表达“计算什么”，不直接决定 goroutine�
 关系：
 
 ```text
-Job Definition
-├── one or more Sources
-├── zero or more Operators
-├── one or more Sinks
+JobBuilder
+├── Transformation definitions
 └── Job Options
+        │ Build / validate / snapshot
+        v
+immutable Job Definition
 ```
 
-第一版可以只支持线性 Pipeline，不应为了远期 DAG 在 M1 预建完整图优化器。
+`To` 只添加 Sink Transformation；`Build` 为当前逻辑拓扑创建不可变 Job 快照。第一版
+Build 只接受恰好一个 Source、零个或多个 Operator Transformation、恰好一个 Sink 组成的
+无分支线性 Pipeline。Builder 后续变化不影响已构建 Job，Builder 本身不保证并发安全。
+内部保留 Transformation 身份和上游引用，未来可以放宽结构校验并增加图编译阶段，但不应
+为了远期 DAG 在 M1 预建完整图优化器。
 
 ### 5.2 Typed Stream / DSL
 
@@ -116,13 +121,15 @@ Job Definition
 职责：
 
 - 使用 Go 泛型在编译期约束相邻 Operator 的输入输出类型；
-- 提供 Map、Filter、FlatMap 等拓扑构建入口；
-- 生成逻辑节点和边，而不是传输运行期数据。
+- 使用 Go 1.27 泛型方法提供 `From`、Map、Filter、FlatMap、`To` 等 fluent 构建入口；
+- 以 `Stream[T]` 作为指向当前 Transformation 的类型安全句柄；
+- 生成 Transformation 及其引用关系，而不是传输运行期数据。
 
 不负责：
 
 - 不启动 goroutine；
 - 不保存实时 Record；
+- 不在定义阶段创建一个由所有 lane 共享的运行时 Operator；
 - 不提供背压；
 - 不把 Kafka 或 ClickHouse 客户端暴露给用户 Operator。
 
@@ -561,8 +568,9 @@ One record's chain      synchronous in one Worker
 一个 Pipeline Worker、一个 execution slot 和该通道独占的 Operator Chain 实例共同组成一条
 `execution lane`。每条 lane 独立创建 Operator Chain，不与其他 lane 共享 Operator 实例；
 同一实例只由所属 Worker 串行调用。这样普通 Operator 不需要为 `Process` 并发调用加锁，
-并为未来的实例局部状态保留清晰边界。Job Definition 必须描述如何为每条 lane 创建 Chain，
-具体 factory API 留待第一版线性 Job Definition 设计确定。
+并为未来的实例局部状态保留清晰边界。Job Definition 中的 Transformation 描述如何为每条
+lane 创建 Chain。内置 Transformation 可以共享用户函数值，但每条 lane 的 Operator 包装
+实例独立；函数捕获和外部依赖的并发安全、幂等性及副作用仍由用户负责。
 
 不负责：
 
@@ -1192,8 +1200,10 @@ notify completion / commit sinks
 
 | 对象/概念 | 创建者 | 主要所有者 | 生命周期 |
 |---|---|---|---|
-| Job Definition | 用户 API | 调用方 | 构建到编译结束，可复用性待设计 |
-| Logical Graph | DSL/Builder | Job Definition | 作业定义期 |
+| JobBuilder | 用户 API | 调用方 | 可变定义期；不保证并发安全 |
+| Transformation | DSL/Builder | JobBuilder | 作业定义期；持有逻辑身份和引用关系 |
+| Job Definition | JobBuilder.Build | 调用方 | Build 时不可变快照，可独立于 Builder 使用 |
+| Logical Graph | Builder/Compiler | Job Definition | 作业定义与编译期 |
 | Execution Graph | Planner | Runtime 启动流程 | 一次编译/运行版本 |
 | Runtime | 调用方 | 调用方 | 一次 Job 运行 |
 | Source Connector | Runtime/Factory | Runtime | Job 或 split ownership 生命周期 |
@@ -1287,7 +1297,6 @@ State API      → specific backend implementation
 以下问题尚未定稿，应在阶段设计或原型中解决：
 
 - Operator 是否长期保留为接口，还是以 function adapter 为主；
-- 第一版 Job Definition 是线性 Pipeline 还是最小 DAG；
 - Skip 是否被视为允许推进 position 的终态；
 - M2 的 Runtime Envelope 和 position 是否采用泛型、opaque token 或内部 adapter；
 - Kafka rebalance 时允许多长时间 drain；

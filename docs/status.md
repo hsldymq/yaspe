@@ -1,6 +1,6 @@
 # yaspe Current Status
 
-最后更新：2026-08-23
+最后更新：2026-08-24
 当前里程碑：M0 — 核心语义与项目基线
 
 ## 新会话阅读顺序
@@ -128,19 +128,24 @@ package operator
 - yaspe Runtime 决定 safe position，Kafka Connector 执行 offset commit；
 - 第一版目标是 record 级并行、单 record 内同步执行；
 - 第一版一个 Pipeline Worker、一个 execution slot 和一套独占的 Operator Chain 组成一条 execution lane；每条 lane 独立创建 Operator Chain，不跨 lane 共享 Operator 实例，同一实例只由所属 Worker 串行调用；
-- Job Definition 必须保留为每条 lane 创建 Operator Chain 所需的信息，具体 factory/构建 API 在第一版线性 Job Definition 设计中确定；
+- 第一版使用 Go 1.27 泛型方法提供 `JobBuilder`、`Stream[T]` 和 fluent Transformation API；`JobBuilder` 持有定义，`Stream[T]` 是指向当前 Transformation 的类型安全句柄；
+- Map、Filter、FlatMap 添加 Transformation，不直接添加运行时 Operator；内部保留 Transformation 身份和上游引用，以便未来从线性链演进到 DAG；
+- 内置 Transformation 可以共享用户函数值，但 Runtime 为每条 lane 创建独立 Operator 包装实例；函数捕获和外部依赖的并发安全、幂等性及副作用由用户负责；
+- `To` 只添加 Sink Transformation，`Build` 校验当前拓扑并创建不可变 Job 快照；Builder 后续变化不影响已构建 Job，Builder 本身不保证并发安全；
+- 第一版 Build 只接受单 Source、零个或多个 Operator Transformation、单 Sink 组成的无分支线性链；未来通过放宽校验和增加图编译阶段支持 DAG；
 - 不通过无限队列、无限 goroutine 或提前提交 position 换取吞吐。
 
 ## 当前开放问题
 
-- 第一版线性 Job Definition。
+- Skip 是否为允许推进 position 的终态；
+- Kafka revoke 的默认收尾期限。
 
 ## 下一步
 
 1. 以 `designs/0001-core-execution-model.md` 为唯一正式核心执行模型；
-2. 从正式 Design 第 16 节继续收敛开放问题，优先讨论第一版线性 Job Definition；
-3. 明确 Skip 终态和 Kafka revoke 默认期限；
-4. 在核心开放问题收敛前，尚不要实现 Worker Pool、Kafka 或完整 DAG。
+2. 从正式 Design 第 16 节继续收敛开放问题，优先明确 Skip 终态；
+3. 随后明确 Kafka revoke 默认期限；
+4. 在剩余核心开放问题收敛前，尚不要实现 Worker Pool、Kafka 或完整 DAG。
 
 ## 工具链
 

@@ -1,7 +1,7 @@
 # 0001：核心执行模型
 
 状态：Accepted（已确定条款作为当前设计；“开放问题”仍待后续收敛）
-最后更新：2026-08-23
+最后更新：2026-08-24
 适用阶段：M0–M2
 
 > 本文件是当前正式 Design，由多轮设计讨论与
@@ -153,8 +153,51 @@ Map → Filter → FlatMap → terminal output
 每条 execution lane 拥有独立创建的 Operator Chain；不同 lane 不共享 Operator 实例。同一
 实例只由所属 lane 的 Pipeline Worker 串行调用，因此普通 Operator 无需为了 `Process`
 并发调用自行加锁，也不得被 Runtime 同时用于多条 lane。Job Definition 必须保留创建每条
-Chain 所需的信息，而不能仅依赖一个待共享的现成 Operator 对象；具体 factory/构建 API
-留到第一版线性 Job Definition 中确定。
+Chain 所需的信息，而不能仅依赖一个待共享的现成 Operator 对象。
+
+### 3.1 第一版线性 Job Definition
+
+第一版使用 Go 1.27 泛型方法提供类型安全的 fluent API。`JobBuilder` 是逻辑定义的所有者，
+`Stream[T]` 是指向当前 `Transformation` 的类型安全句柄；Map、Filter、FlatMap 和自定义
+Operator 接入都会添加新的 Transformation，而不是在定义阶段添加一个已实例化并由所有
+lane 共享的 Operator。
+
+概念调用形态为：
+
+```go
+builder := yaspe.NewJob("lightning-log-filter")
+
+builder.
+    From(source).
+    Map(parse).
+    Filter(validate).
+    FlatMap(extract).
+    To(sink)
+
+job, err := builder.Build()
+```
+
+Transformation 记录逻辑计算语义、拓扑身份、上游关系、用户函数和创建运行实例所需的
+信息，但不处理 Record、不启动 goroutine，也不持有运行期队列或 session。`Stream[T]`
+持有当前 Transformation 的内部引用；每次转换返回指向新尾节点的 `Stream[O]`，旧 Stream
+仍可保留。内部必须保留 Transformation 身份和引用关系，不能只把整条路径复制成一个
+Operator factory 切片，以免阻断未来的分支和 DAG 演进。
+
+内置 Map、Filter 和 FlatMap Transformation 可以共享用户提供的函数值，但 Runtime 为每条
+execution lane 分别创建包装该函数的 Operator 实例。同一 Operator 实例只由所属 lane 串行
+调用；多个 lane 可能并发调用同一个用户函数值。函数捕获的变量和外部依赖不会因 Operator
+实例化而复制，其并发安全、幂等性和副作用由用户负责。需要 lane-local 实例状态的自定义
+Operator 通过 factory 接入。
+
+`To` 只向 Builder 添加 Sink Transformation，不直接封闭并返回 Job。`Build` 对当前
+Transformation 拓扑创建不可变快照、执行结构校验并返回 Job；Builder 后续变化不影响已经
+构建的 Job，Builder 本身不保证并发安全。第一版 Build 只接受恰好一个 Source、零个或多个
+Operator Transformation、恰好一个 Sink，且它们构成一条无分支、无合流、无悬空节点的
+线性链。未来支持多 Source、分支和多 Sink 时通过放宽 Build 校验并增加图编译阶段演进，
+无需改变 `From`、Transformation 方法和 `To` 的基本模型。
+
+`Transformation`、内部引用、ID、类型擦除和 factory 的具体 Go 类型名仍可通过实现原型
+细化；这些实现选择不得改变以上定义期、编译期和运行期边界。
 
 ## 4. Source 物理模型与 Runtime Reader
 
@@ -806,7 +849,6 @@ checkpoint completion and recovery
 
 - Emit 成功后的引用数据 ownership 与复制规则；
 - 用户回调的线程安全契约；
-- 第一版线性 Job Definition；
 - Skip 是否为允许推进 position 的终态；
 - Kafka revoke 的默认收尾期限；
 - 失败策略的具体动作、等待节奏和恢复范围；
@@ -865,7 +907,17 @@ checkpoint completion and recovery
 - Source 与 Operator 的独立测试边界；
 - Source 边界的专项验证和重新评估条件。
 
-### 18.4 对潜在冲突的统一表述
+### 18.4 线性 Job Definition 讨论形成的决定
+
+- `JobBuilder` 持有逻辑定义，`Stream[T]` 是类型安全的 Transformation 句柄；
+- 使用 Go 1.27 泛型方法表达 Map、Filter、FlatMap 等相邻类型关系；
+- Transformation 是描述逻辑计算和拓扑关系的定义期对象，不是运行时 Operator；
+- 内置 Transformation 共享用户函数值，但为每条 lane 创建独立 Operator 包装实例；
+- 用户函数捕获和外部依赖的并发安全、幂等性与副作用不由实例隔离保证；
+- `To` 添加 Sink Transformation，`Build` 校验并快照为不可变 Job；
+- 第一版 Build 只接受单 Source、线性 Operator Chain 和单 Sink，内部引用模型保留未来 DAG 演进能力。
+
+### 18.5 对潜在冲突的统一表述
 
 Source 架构决策中的“Source 通过 Runtime 边界提交”和第二轮讨论中的“Runtime 从 Reader 取走”统一为：
 
