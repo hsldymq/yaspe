@@ -616,6 +616,7 @@ CEP 依赖 Keyed State、Event Time、Watermark、Timer、恢复和状态清理�
 - 完成开发会话后更新 `status.md`；
 - 实现改变公开语义时同步修改设计和测试；
 - 过期设计应标记 superseded，而不是抹去历史原因。
+- 文档职责、三维状态、决策生命周期和接力协议遵循 [Documentation Governance](governance.md)。
 
 ### 16.5 API 稳定性
 
@@ -647,21 +648,8 @@ Superseded   被新的里程碑或方案替代
 
 ## 18. 当前下一步
 
-当前处于 M0。下一项工作是起草并评审：
+当前处于 M0。核心执行模型已经 Accepted，但影响 M1/M2 公共 API、ownership、并发和恢复
+正确性的开放问题仍需按 [Current Status](status.md) 和
+[Core Design §16](designs/0001-core-execution-model.md#16-当前开放问题) 依次收敛。
 
-```text
-docs/designs/0001-core-execution-model.md
-```
-
-该设计至少需要明确：
-
-- Record 及其 metadata 的边界；
-- Source、Operator、Collector、Sink 和 Runtime 的职责；
-- Map、Filter 和 FlatMap 的输出模型；
-- 多次 Emit 和部分 Emit 后失败的语义；
-- record 级并发、队列和背压；
-- 用户函数吸收业务错误、Retry 和 FailJob；
-- 正常结束、取消和优雅停止；
-- 一条记录的完成条件；
-- 第一版明确不提供的事务与一致性保证；
-- 测试矩阵和 benchmark 基线。
+当前唯一下一步由 Status 维护；Roadmap 不复制动态讨论队列。

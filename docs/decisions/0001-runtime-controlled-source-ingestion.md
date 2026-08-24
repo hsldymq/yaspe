@@ -1,7 +1,10 @@
 # 0001：由 Runtime 控制 Source 数据进入
 
-状态：Accepted  
+状态：Accepted
+
 日期：2026-08-01
+
+影响阶段：M1+
 
 ## 背景
 

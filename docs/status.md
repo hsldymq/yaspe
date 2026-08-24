@@ -1,22 +1,35 @@
 # yaspe Current Status
 
 最后更新：2026-08-24
-当前里程碑：M0 — 核心语义与项目基线
 
-## 新会话阅读顺序
+本文是动态交接快照，不是完整设计记录。完整契约见正式 Design，决定背景和取舍见
+[决策索引](decisions/README.md)，维护规则见 [Documentation Governance](governance.md)。
 
-1. 本文件；
-2. [Living Architecture](architecture.md)；
-3. [Roadmap](roadmap.md) 当前里程碑；
-4. [核心执行模型 Design](designs/0001-core-execution-model.md)；
-5. 相关 [ADR](decisions/)；
-6. 当前代码和测试。
+## 当前里程碑
 
-## 项目定位
+M0 — 核心语义与项目基线。
 
-yaspe 是一个使用 Go 1.27 编写的、类型安全、可嵌入的流处理引擎。首个真实使用方是 `lightning-log-filter`。
+## 当前目标
 
-## 当前代码
+先收敛所有影响 M1/M2 公共 API、ownership、并发和恢复正确性的设计，再开始 Runtime、
+Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公开保证的数据结构可以由
+受约束原型细化。
+
+## 三维能力状态
+
+| 能力 | Design | Implementation | Verification | 权威位置 |
+|---|---|---|---|---|
+| Record / Collector / Operator | Accepted | Implemented | Unit Tested | [Core Design §5](designs/0001-core-execution-model.md#5-collector-生命周期与并发) |
+| Map / Filter / FlatMap | Accepted | Implemented | Unit Tested | [Core Design §6](designs/0001-core-execution-model.md#6-operator-chain-与-work-attempt-边界) |
+| 线性 Job Definition | Accepted | Not Started | Not Applicable | [Core Design §3.1](designs/0001-core-execution-model.md#31-第一版线性-job-definition) |
+| M1 Stateless Runtime | Discussing | Not Started | Not Applicable | [Core Design §16.1](designs/0001-core-execution-model.md#161-m1-实现前必须收敛) |
+| M2 Position / Completion | Discussing | Not Started | Not Applicable | [Core Design §16.2](designs/0001-core-execution-model.md#162-m2-实现前必须收敛) |
+| 异步 Sink 协议 | Discussing | Not Started | Not Applicable | [Core Design §7](designs/0001-core-execution-model.md#7-sink-交接与-completion) |
+| Kafka Consumer Group / Rebalance | Accepted | Not Started | Not Applicable | [ADR-0002](decisions/0002-use-kafka-consumer-group-for-external-coordination.md) |
+| Kafka / ClickHouse Connector | Discussing | Not Started | Not Applicable | [Roadmap M2](roadmap.md#6-m2source-position完成跟踪与生产级-sink) |
+| Dead Letter / Side Output | Planned for later | Not Started | Not Applicable | [Roadmap M4](roadmap.md#8-m4keyby分区执行与逻辑物理执行图) |
+
+## 当前代码事实
 
 ```text
 package yaspe
@@ -30,138 +43,81 @@ package operator
 └── FlatMap[I, O]
 ```
 
-当前已有 Map 测试覆盖：
+已有单元测试覆盖：
 
-- 正常转换；
-- transform 失败时零输出；
-- Emit 失败向上传播；
-- context 传递给 transform。
+- Map 的正常转换、transform error、Emit error 和 context 传递；
+- Filter 的匹配/不匹配、predicate error、Emit error 和 context 传递；
+- FlatMap 的零/多输出、输出顺序、transform error 和中途 Emit error。
 
-当前已有 Filter 测试覆盖：
+尚不存在 JobBuilder、Transformation、Runtime、Source/Sink Connector、position、completion
+tracker、Kafka 或 ClickHouse 实现。
 
-- predicate 匹配时输出原记录；
-- predicate 不匹配时零输出；
-- context 传递给 predicate；
-- predicate 失败时零输出；
-- Emit 失败向上传播。
+## 最近接受的决定
 
-当前已有 FlatMap 测试覆盖：
+- 仓库文档、代码和测试作为跨会话项目记忆；Design、Implementation、Verification 分开跟踪，
+  新会话按统一入口和 Status 接力，详见 [ADR-0003](decisions/0003-use-repository-docs-as-project-memory.md)；
+- JobBuilder 持有 Transformation 定义，`Stream[T]` 提供 Go 1.27 泛型 fluent API，`Build`
+  产生不可变 Job 快照；第一版只接受单 Source、线性 Chain 和单 Sink；
+- 每条 execution lane 创建独立 Operator 包装实例，同一用户函数值可以跨 lane 共享并并发调用；
+- Runtime 不提供 `SkipRecord`、`DiscardRecord` 或 Transformation `OnError`；可忽略业务错误
+  由用户函数收敛为正常零输出，未处理 error 进入 Job 级 Retry/FailJob；
+- Dead Letter 延后为显式业务输出、Side Output、分支和专用 Sink，不是 Runtime 失败终态；
+- Kafka revoke 暂停该 Source 全部新 admission，started/Sink-owned work有限收敛，默认期限
+  30 秒且受 Connector 更早 deadline 限制；eager/cooperative/lost 共用 generation 机制。
 
-- 零输出和多输出；
-- 多个结果按切片顺序输出；
-- context 传递给 transform；
-- transform 失败时零输出；
-- Emit 中途失败时保留此前输出并停止后续发送。
+完整索引与权威链接见 [Decision Index](decisions/README.md)。
 
-## 已接受方向
+## 当前开放问题与顺序
 
-- Operator 描述计算，Runtime 控制执行；
-- Source 数据进入受 Runtime 有界容量和背压控制；
-- Connector 适配外部系统的物理 pull/push 模型；
-- 第一版保留 `Collector.Emit(ctx, record)`；内置 Operator 默认透传 `Process` context，普通构造 API 的使用方无需直接处理 context；
-- Map 同时提供简单 transform 和 context-aware transform 构造入口；
-- Filter 同时提供简单 predicate 和 context-aware predicate 构造入口；
-- FlatMap 同时提供简单 transform 和 context-aware transform 构造入口；
-- FlatMap 的多个输出按顺序 Emit，首次 Emit 失败后不再发送剩余输出；
-- FlatMap 调用不是事务边界，Sink batch 不保留 FlatMap 输出分组；
-- 同一输入的派生输出可共同参与完成跟踪，但这不等于事务原子性；
-- M1/M2 近期采用多条并行的完整 Pipeline，单条输入在 Operator Chain 内同步执行；
-- 第一版以一条 Runtime 已接受的输入执行完整同步 Chain 作为一次 work attempt；
-- 中间 Operator 不保留持久恢复缓存，最终输出在 attempt 成功前留在 Runtime 可撤销的有界末端边界；
-- Chain 失败时丢弃未转移的末端输出，并在策略允许时使用原始输入重新执行整条 Chain；
-- Chain 成功后输出才转移给 Sink，之后的失败优先在 Sink 边界恢复，不重新执行 Operator；
-- 一个 work 的最终输出向 Sink 整组交接，成功前归 Runtime、成功后归 Sink；整组交接不要求同一物理 batch，Sink 可跨 work 组批；
-- Runtime 将 terminal output 包装为带不透明 completion 身份的 `SinkItem[T]`；Sink Connector 接收一个 work 的完整 `[]SinkItem[T]`，不接收内部 `Work`；
-- Connector 使用 `item.Record` 生成目标系统请求，并在 callback 时原样报告对应 item，无需维护 index 或依赖业务值相等性；`T` 必须匹配 Sink 输入类型；
-- Runtime 保留 attempt、generation、position 和 completion 状态；`Accept` 每次接收绑定当前 work 的 `SinkResultReporter`，reporter 可在返回后保存、跨 goroutine 使用且必须并发安全；
-- 只有 `SinkAccepted, nil` 才使 reporter 有效；Runtime 必须安全处理 callback 早于 `Accept` 返回的竞态，容量恢复通知与 work reporter 分离；
-- reporter 通过 `Report([]SinkItemResult[T])` 增量或批量报告，outcome 为 `SinkSucceeded`、`SinkNotApplied` 或 `SinkUnknown`；成功的 `Err` 必须为 nil，后两者必须为非 nil，没有底层异常时使用标准哨兵错误；
-- `Report` 不返回 error，并把 results slice 所有权转给 Runtime；Connector 调用后不得读取、修改或复用该 slice 及其 backing array，从而允许 Runtime 避免复制；
-- 未来通用异步 Sink 可以内部增加物理请求级 result handler，聚合跨 work 组批或拆批结果，但不改变稳定的 `Accept(items, reporter)` 边界；
-- 每个 Sink 由独立 Sink Coordinator 调用 `Accept`；Pipeline Worker 只向有界 terminal queue 整组提交 completed work，不直接调用 Sink 或维护 Sink 容量；
-- Runtime 为每个 Sink 实例创建 `SinkContext` 并调用一次 `Open`，成功后才开放业务数据，结束时最多调用一次 `Close`；第一版 `SinkContext` 只提供 `LifecycleContext()` 和 `CapacityNotifier()`；
-- `SinkCapacityNotifier.NotifyAvailable()` 报告调用瞬间观察到可用容量，但不预留容量或保证下一次 `Accept` 成功；它可并发调用、不返回 error，Runtime 容忍重复、合并和过时通知；
-- Sink 生命周期 context 可供后台任务和已接管异步操作保存且仅由 Runtime 取消；`Accept` context 只控制单次接管，`Close` 使用独立 context 控制有限收尾；
-- terminal queue 满时 Worker 可取消地阻塞并持有当前 work；固定 Worker、队列、Coordinator current 和 Sink in-flight 都计入资源预算，Coordinator/completion 路径不得依赖被阻塞的 Worker；
-- Runtime 决定 work 的 Sink 交付资格与内部调度，Sink Connector 不感知 pull、push、mailbox 或 event loop；
-- Sink 原子接管方法返回 `(SinkAcceptStatus, error)`：`SinkAccepted` 表示整组接管，`SinkBackpressured` 表示一个也未接管；任何非 `nil` error 同样表示一个也未接管并忽略 status；
-- 回压时责任仍在 Runtime；容量通知采用单调 version，Coordinator 在 `Accept` 前观察版本，返回回压后若版本已变化就立即重试，否则原子等待后续版本，从而避免丢失唤醒；
-- Sink completion 区分确认成功、可证明未生效和结果未知；重试决策是独立的用户策略维度；
-- 能可靠获得逐项结果时保留成功部分并只重试未完成部分，整批重试是无法细分时的特殊情况；
-- Sink 异步回调统一交给 Runtime 协调路径串行、幂等处理，迟到、乱序和重复通知不得重复终结 work 或推进旧 generation；
-- 外部客户端 callback 只能通过 reporter/notifier 提交事实；capacity 使用同步推进 version 的独立 signal，每个 reporter 使用有界 result inbox；
-- 同一 reporter 的多次增量 Report 在 Coordinator drain 前最多产生一个 pending wakeup，重复或非法结果在进入 pending 存储前丢弃，活跃 reporter 总数受 in-flight 上限约束；
-- Sink Coordinator 将 item outcome 聚合成 work-level completion 后交给 Completion Tracker，后者负责输入终态、permit 和 position；capacity 与 completion 不强制共用普通 FIFO channel；
-- Sink 的等待 buffer、并发请求、重试项和 timer 都必须有界；
-- 第一版 Runtime 只公开 `Parallelism` 和 `MaxInFlightWorks` 两个数量限制；固定 Worker 复用执行不同 work，端到端 permit 从 Source admission 持续到 work terminal；
-- work 是输入的端到端状态与责任载体，不是 goroutine；同一 work 可经历多个 attempt，第一版固定 Worker 与 execution slot 一一对应；completed work 成功进入 terminal queue 后 slot 可复用，但 permit 不释放；
-- input/terminal/wakeup 等局部 queue 容量由 Runtime 内部推导，terminal queue 按 completed work 计数，第一版容量为 `min(MaxInFlightWorks, 2 * Parallelism)`；Sink 和 Source Connector 分别按 item/prefetch 数量限制自身容量；
-- 第一版不实现字节预算、动态借贷或单 work 输出数量限制，也不保证总驻留字节数有界；业务为 Sink 配置足够大的正常容量，后续按真实需求再增加字节或输出数限制；
-- 每次 Process 获得逻辑独立的 Collector，Process 返回后 Collector 失效；
-- Collector 仅允许在 Process 调用 goroutine 中串行使用，不保证线程安全；
-- Worker 将输出交给异步 Sink 后可以处理下一条输入，但输入 completion 持续到所有必需 Sink effect 完成；
-- 端到端 in-flight permit 持续到输入终结，Sink 变慢通过容量耗尽将回压传回 Source；
-- Kafka position 只推进 partition 内连续完成位置；
-- 第一版生产链路以 at-least-once、避免静默丢失为目标，长期演进到 checkpoint epoch；
-- 重试优先暂停引入新数据，把问题限制在当前失败和有界在途数据；
-- 重试可以在时间上无限等待，是否退出由用户策略决定，但空间和执行资源必须有界且始终响应宿主取消；
-- 暂停后不再启动已接受但尚未执行的记录，已开始的 Chain 可继续收敛到末端边界；
-- 同一 split 中位于未解决失败之后的新 Sink effect 暂缓，失败之前可填补连续进度的记录允许继续；
-- 已被 Sink 接受的操作不撤回，暂停期间仍处理 completion、推进并尽快持久化 safe position；
-- 同一暂停期间的多个失败由一次 Job 级恢复过程协调，每条失败仍保留独立诊断和恢复状态；
-- 所有阻塞项解决后才恢复新数据，重试并发、依赖探测、日志和报警由统一恢复过程限制和聚合；
-- 最终 FailJob 或宿主取消时，已被 Sink 接受的未定操作在可配置且受宿主 deadline 限制的关闭期限内等待；
-- 关闭期间仍更新 completion 和 safe position 并尽快提交，到期未确认操作不得标记为成功；
-- Connector 已读取但 Runtime 尚未接受的数据由 Connector 有界持有，不进入 record completion tracking；
-- Source Connector 读取外部原始数据，配置的 deserializer/parser 负责产生业务值 `T`，并在正式交接前有界持有；Runtime 取得 in-flight permit 后通过非阻塞 Reader 取走 `T`，再统一创建 `Record[T]`、内部 Envelope 和 Work；具体 Reader API 尚未确定；
-- 第一版 `Record[T]` 只有 `Value T`；Source 特有且业务需要观察的信息由 deserializer 放入 `T`，Map 只传播 transform 明确保留在输出类型中的信息，不提供无类型通用 metadata；
-- split、position、ownership generation、work identity、attempt、completion 和 permit 等正确性 metadata 永远留在 Runtime Envelope；event time 等到 window、watermark、timer 出现真实需求并明确传播语义后再评估；
-- 临时暂停时可保留有界未交接数据并在恢复后优先按 split 内原顺序交接，暂停期间不得扩大预取；
-- 未交接数据从属当前 split ownership，revoke、ownership 连续性无法确认或 Job 终止时丢弃，不产生 completion 或 position 推进；
-- 同一 split 重新分配给同一实例也属于新 ownership，不复用旧 ownership 的未交接缓存；
-- revoke 期间第一版暂停该 Kafka Source 所有 split 的新业务 admission，但 heartbeat、session 和必要的 poll/control 继续；只对 revoked split 收尾，retained split 保留 ownership generation 和有界预取；
-- revoked split 尚未开始的 work 不再启动；已开始的 work 可以完成 Chain、进入 Sink 并等待 completion，已有 Sink-owned work 同样有限等待，以填补 position gap 并减少重放；
-- `RevokeDrainTimeout` 默认 30 秒，实际 deadline 受 Connector 可用 rebalance deadline 上限约束并为最终 commit/回调返回预留时间；到期 unknown 不标记成功，只提交连续 safe position；
-- ownership 失效后通过 generation fence 拒绝旧任务推进或提交 position；被 revoke 的 split 即使重新分配给同一实例也从 committed offset 创建新 generation，retained split 不重置；
-- 同一机制支持 eager 的全量 revoked 集合和 cooperative 的部分集合；split lost 时立即 fence、清理且不再提交旧 position，不执行正常 drain；
-- 暂停业务数据交接不等于停止 Kafka session/heartbeat 维护；
-- 第一版面向 Runtime 采用非阻塞 Reader，通过可等待的可用性通知避免忙轮询；
-- Connector 内部适配外部阻塞 I/O、批量读取和 session 维护，Runtime 取得 permit 后才取走记录并完成责任交接；
-- 业务记录与 Source 控制事件使用独立路径，ownership 失效、revoke、取消和 fatal error 优先于新的记录交接；
-- 多 Pod Kafka Source 早期使用 Kafka Consumer Group 协调 partition；
-- yaspe Runtime 决定 safe position，Kafka Connector 执行 offset commit；
-- 第一版目标是 record 级并行、单 record 内同步执行；
-- 第一版一个 Pipeline Worker、一个 execution slot 和一套独占的 Operator Chain 组成一条 execution lane；每条 lane 独立创建 Operator Chain，不跨 lane 共享 Operator 实例，同一实例只由所属 Worker 串行调用；
-- 第一版使用 Go 1.27 泛型方法提供 `JobBuilder`、`Stream[T]` 和 fluent Transformation API；`JobBuilder` 持有定义，`Stream[T]` 是指向当前 Transformation 的类型安全句柄；
-- Map、Filter、FlatMap 添加 Transformation，不直接添加运行时 Operator；内部保留 Transformation 身份和上游引用，以便未来从线性链演进到 DAG；
-- 内置 Transformation 可以共享用户函数值，但 Runtime 为每条 lane 创建独立 Operator 包装实例；函数捕获和外部依赖的并发安全、幂等性及副作用由用户负责；
-- `To` 只添加 Sink Transformation，`Build` 校验当前拓扑并创建不可变 Job 快照；Builder 后续变化不影响已构建 Job，Builder 本身不保证并发安全；
-- 第一版 Build 只接受单 Source、零个或多个 Operator Transformation、单 Sink 组成的无分支线性链；未来通过放宽校验和增加图编译阶段支持 DAG；
-- Runtime 不提供 `SkipRecord`、`DiscardRecord` 或 Transformation `OnError`；用户函数在业务逻辑附近把可忽略错误收敛为 Filter 不保留、FlatMap 零输出或自定义 Operator 的正常零输出；
-- Map 的成功语义保持严格一进一出；未被用户函数吸收的 error 只进入 Job 级 Retry/FailJob 策略；正常零输出属于 Success，可终结输入并推进连续 safe position；
-- Dead Letter 未来通过显式业务输出、Side Output、分支或专用 Sink 建模，不作为 Runtime 失败终态；
-- 不通过无限队列、无限 goroutine 或提前提交 position 换取吞吐。
+完整清单见 [Core Design §16](designs/0001-core-execution-model.md#16-当前开放问题)。当前顺序：
 
-## 当前开放问题
+1. Emit 成功/失败后的引用数据 ownership 与复制规则；
+2. 用户函数、lane-local Operator、Collector 和 callback 的并发契约；
+3. Collector context 与 panic/FailJob；
+4. M1 Source Reader、admission、Memory Sink 和 Job API 定稿；
+5. M2 Retry、position/Envelope、异步 Sink/completion；
+6. Kafka/ClickHouse Connector、指标、故障注入和交付保证审核。
 
-- M1：Emit 引用数据 ownership、回调并发、Collector context、panic/FailJob、Source Reader 和 Job API 定稿；
-- M2：Retry、position/Envelope、异步 Sink/completion、Kafka/ClickHouse Connector 和故障验证定稿。
+### 当前问题：Emit ownership
 
-## 下一步
+问题：`Collector.Emit` 成功或失败后，`Record[T]` 及其 slice、map、pointer 等引用数据归谁
+所有，Runtime 是否复制，调用方何时可以修改或复用？
 
-1. 以 `designs/0001-core-execution-model.md` 为唯一正式核心执行模型；
-2. 按正式 Design 第 16 节顺序，先明确 Emit 成功/失败后的引用数据 ownership 与复制规则；
-3. 依次收敛 M1 的并发/context/panic/FailJob/Reader/Job API，再收敛 M2 的 Retry、position、Sink 和 Connector；
-4. 完成测试、指标、故障注入和交付保证审核后结束 M0，再开始 M1/M2 编码；
-5. 完整 DAG、Side Output、状态、checkpoint 和 exactly-once 仍按后续里程碑推进。
+影响阶段：M1–M2。
 
-## 工具链
+已知约束：
 
-```text
-Go language version: 1.27
-Minimum toolchain: Go 1.27 stable
-Current local toolchain: go1.27.0-X:nodwarf5 linux/amd64
-```
+- `T` 是任意 Go 类型，Runtime 无法通用、安全地深拷贝；
+- 同步 Chain 的 terminal output 会在 attempt 成功前由 Runtime 暂存；
+- Sink 整组接管成功前后需要明确责任转移；
+- ownership 规则必须覆盖 Emit 成功、Emit 失败、Process 返回和异步 Sink callback。
 
-`go.mod` 不固定具体 patch toolchain，由开发环境和 CI 使用 Go 1.27
-或更新的兼容工具链。
+候选方向：
+
+- Emit 成功即转移 ownership，调用方不得继续修改或复用；
+- 借用到 Process 返回，由 Runtime 在边界复制必要数据；
+- 通过可选 copier/serializer 显式选择复制。
+
+当前倾向：尚未接受。需要同时比较正确性、API 可理解性和复制成本。
+
+完成条件：Core Design 明确每个边界的 ownership、允许操作、失败行为和测试要求，并从本节移除。
+
+## 当前唯一下一步
+
+讨论并接受 `Collector.Emit` 成功和失败后的引用数据 ownership 与复制规则。
+
+在该问题收敛前不开始受其影响的 Runtime、queue 或 Sink 实现。
+
+## 最近验证
+
+- `go test ./...`：通过；
+- `git diff --check`：通过；
+- Markdown 相对链接目标检查：通过；
+- Runtime/fault/race benchmark：尚不适用或尚未运行。
+
+## 工作区交接说明
+
+- 当前存在未提交的文档治理和设计更新；
+- 尚未开始 M1/M2 Runtime 或 Connector 编码；
+- 新会话必须先检查实际 `git status` 和 diff，不能仅依赖本节；
+- 当前本地工具链：`go1.27.0-X:nodwarf5 linux/amd64`；`go.mod` 要求 Go 1.27。

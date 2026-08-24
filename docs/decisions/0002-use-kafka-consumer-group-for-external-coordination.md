@@ -1,7 +1,12 @@
 # 0002：早期多实例 Kafka Source 使用 Consumer Group 协调
 
-状态：Accepted  
+状态：Accepted
+
 日期：2026-08-01
+
+最后更新：2026-08-24
+
+影响阶段：M2+
 
 ## 背景
 

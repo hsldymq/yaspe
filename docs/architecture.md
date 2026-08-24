@@ -41,6 +41,10 @@ Implementation
 
 本文中的方框表示概念角色，不保证最终一定对应同名 Go struct 或 package。只有当前阶段设计接受后，概念才进入具体接口和实现。
 
+上述架构成熟度与项目统一的 Design、Implementation、Verification 三维能力状态不同；三维
+状态和文档职责见 [Documentation Governance](governance.md)，当前事实见
+[Current Status](status.md)。
+
 ## 3. 当前项目定位
 
 yaspe 是一个使用 Go 编写的、类型安全、可嵌入的流处理引擎。
@@ -1317,20 +1321,15 @@ State API      → specific backend implementation
 
 ## 22. 文档更新规则
 
-当实现或讨论改变架构时：
+项目统一遵循 [Documentation Governance](governance.md)。跨阶段职责、依赖方向、ownership
+或长期不变量变化时更新本文；重要且长期有效的取舍同时形成 ADR。具体能力契约留在 Design，
+当前断点留在 Status，代码和测试提供实现证据。
 
-1. 判断变化属于架构、阶段设计还是局部实现；
-2. 跨阶段职责变化更新本文；
-3. 重要且长期有效的取舍新增 ADR；
-4. 当前阶段具体方案更新对应 Design；
-5. 代码行为变化必须有测试；
-6. 更新 `status.md` 的当前进展、开放问题和下一步；
-7. 被替代的 ADR/Design 标记 `Superseded`，不要抹除历史。
-
-本文中的候选概念被实现后，应把其状态从 `Planned` 更新为 `Current`，并链接对应代码或 Design。被真实需求否定的概念应删除或标明替代方案。
+本文中的候选概念被实现后，应把架构成熟度从 `Planned` 更新为 `Current`，并链接对应代码
+或 Design。被真实需求否定的概念应标明替代方案；不要抹除 ADR 和重要取舍历史。
 
 ## 23. 给新会话的最短上下文
 
-如果只阅读一段，请使用以下摘要：
-
-> yaspe 是一个 Go 1.27 的类型安全、可嵌入流处理引擎。当前处于 M0，已实现最小 `Record[T]`、`Operator[I,O]`、`Collector[T]` 以及 `Map`、`Filter`、`FlatMap`。近期目标是实现单进程、有界、record 级并行的 stateless Runtime，并用 `lightning-log-filter` 验证。Operator 只描述计算，Runtime 拥有并发、背压、错误、完成和生命周期。Source 面向 Runtime 采用非阻塞 Reader 和受控有界交接，外部阻塞 I/O 由 Connector 内部适配。成功 work 的输出通过有界边界整组向 Sink 转移责任；Sink Connector 不感知内部 pull/push，容量判断与整组责任接管原子完成，completion 仍由 Runtime 统一跟踪。多个 Kubernetes Pod 的 Kafka partition 分配早期交给 Kafka Consumer Group；yaspe Runtime 决定 safe position，Kafka Connector 执行 commit。不要提前实现 checkpoint、状态、完整 DAG 或分布式控制平面。所有设计仍可根据实现证据调整。
+新会话不得依赖本节的静态摘要恢复动态状态。请从 [文档入口](README.md) 和
+[Current Status](status.md) 开始，按治理规范核对当前 Roadmap、Design、ADR、代码、测试、
+Git 历史和未提交 diff。

@@ -7,6 +7,8 @@
 > 本文件是当前正式 Design，由多轮设计讨论与
 > [Source 数据进入架构决策](../decisions/0001-runtime-controlled-source-ingestion.md)
 > 合并形成。
+> 文档状态、决策追踪和接力规则遵循 [Documentation Governance](../governance.md)，重要局部
+> 决定索引见 [Decision Index](../decisions/README.md)。
 
 ## 1. 目的与范围
 
@@ -981,7 +983,37 @@ checkpoint completion and recovery
 - Runtime 不提供 Skip/Discard record 动作或 Transformation `OnError`；可忽略业务错误由用户函数收敛为正常零输出；
 - 未被用户函数吸收的 error 只进入 Job 级 Retry/FailJob 策略，正常零输出按 Success 完成并可推进连续 position。
 
-### 18.5 对潜在冲突的统一表述
+### 18.5 近期候选方案与取舍
+
+以下内容记录近期决定背后的主要理由。它不是新的执行规范；规范仍以上文对应章节为准。
+
+- **共享 Operator 实例 vs. lane-local Operator 实例**：不共享包装 Operator，因为共享实例会把
+  `Process` 并发、内部状态同步和锁成本强加给所有实现；选择每条 lane 独立实例，使一个实例
+  始终串行调用。代价是需要保留实例创建信息，而且它无法隔离共享用户函数捕获的变量或外部
+  依赖；这些对象的并发安全和副作用仍由用户负责。
+- **线性 factory 切片 vs. Transformation 引用图**：不把当前路径复制成单纯 factory 切片，
+  因为它会丢失节点身份和上游关系，使未来分支、合流和多 Sink 需要重做定义模型；选择
+  Transformation 引用图，并在第一版 `Build` 时限制为线性结构。代价是内部需要处理异构节点、
+  类型擦除和图校验。
+- **`To` 立即产出 Job vs. `Build` 快照**：不让 `To` 封闭定义，因为这会把单 Sink 假设固化进
+  fluent API；选择由 `Build` 统一校验并创建不可变快照。代价是缺失 Source、Sink 或非法结构
+  要到 `Build` 才报告。
+- **Runtime Discard/OnError vs. 用户函数正常零输出**：不增加 `SkipRecord`、`DiscardRecord`
+  或逐 Transformation `OnError`，因为它们会建立第二套业务控制流、拆散计算与其局部错误处理，
+  并使 fluent chain 充斥错误策略。选择由 Filter、FlatMap 或自定义 Operator 把可忽略业务情况
+  表达为正常零输出；未吸收的 error 进入 Job 级恢复。代价是 Map 若要丢弃输入，需要改用
+  FlatMap 或自定义 Operator；Dead Letter 与 Side Output 延后到图能力阶段讨论。
+- **只暂停 revoked split vs. 暂停全部 Source admission**：第一版 revoke 期间暂停该 Source 的
+  全部 admission，以减少新 work 对 drain 资源的竞争并简化正确性。代价是 retained split 也会
+  暂时增加 lag；如果生产数据证明影响不可接受，再评估按 split admission。
+- **取消全部未入 Sink work vs. 允许 started work 进入 Sink**：选择让已经开始执行的 revoked
+  work 有限完成并进入 Sink，以填补 position 空洞、减少重放和重复；尚未开始的 work 不再启动。
+  代价是 revoke 可能等待更久，因此必须受 drain deadline 限制。
+- **固定无限等待 vs. 默认 30 秒有限 drain**：选择 30 秒作为初始默认值，在常见 Sink drain
+  机会与 rebalance 可用性之间取平衡，并由 Connector 更早的实际 deadline 覆盖。该数值不是
+  协议常量，应根据客户端约束、工作负载延迟和生产指标重新校准。
+
+### 18.6 对潜在冲突的统一表述
 
 Source 架构决策中的“Source 通过 Runtime 边界提交”和第二轮讨论中的“Runtime 从 Reader 取走”统一为：
 
