@@ -1030,14 +1030,30 @@ Operator 表达。只有未被用户吸收的 error 才进入 Job 级 Retry/Fail
 
 FailJob 是用户策略认为当前 Job 不应继续恢复的最终动作。它终止当前 Runtime 并使 `Run` 返回根因错误，但不杀死嵌入 yaspe 的宿主进程。
 
-最终终止时：
+普通 FailJob 按 work 当时已经越过的责任边界停止，而不根据 Source 是否带 position
+选择另一套路径：
 
-- 停止新读取、新交接、新重试和尚未开始的 work；
-- 已被 Sink 接受但结果未定的操作在有限期限内等待；
-- deadline 可配置且不得超过宿主更早的 deadline；
-- 期限内成功继续更新 completion、safe position 并尽快提交；
-- 到期仍未知的操作不标记成功；
-- 未提交输入由可重放 Source 在后续执行中重放。
+| work 阶段 | FailJob 动作 |
+|---|---|
+| 只有 reservation、Reader 尚未返回 ready | 释放空 reservation，不创建 work |
+| 已接管输入但仍在 queued | 不启动 Operator，取消并终结该 work |
+| Operator 已 started | 取消 attempt context；不为填补 position gap 继续执行 |
+| 已形成 terminal outputs、尚未进入 Sink | 丢弃本组 outputs，不开始新的 Sink handoff |
+| 已经进入同步 `Accept` 或已由 Sink 接管 | 不撤回，在 shutdown deadline 内等待明确结果 |
+| 已 completed | 保留已经成立的结果 |
+
+取消是协作式的：Runtime 不能强制终止不响应 context 的用户代码或卡住的 Connector。
+FailJob 使用一个统一、可配置的 shutdown deadline，并受宿主更早 deadline 约束；Source、
+Operator、Sink drain 和 Close 都共享这份总预算，而不是各自重新获得完整期限。期限内
+可信的 Sink success 仍可更新 completion、safe position 并尽快提交；到期仍未知的操作
+不得标记成功。超时后 `Run` 返回可识别的 `ShutdownTimeoutError`，其中报告尚未退出的
+阶段或组件，且不得把相应 goroutine 伪装成已经终止。所有迟到路径必须被 fence，不能在
+`Run` 返回后修改 Runtime 状态、推进 completion/position 或发起新的外部 effect。
+
+position tracker 只根据最终已经成立的 completion 事实计算安全位置，不反过来驱动普通
+FailJob 为填补 position gap 而 drain Operator。未提交输入由可重放 Source 在后续执行中
+重放。Kafka revoke 为减少 commit gap 而允许 started work 有限收敛，仍是独立的
+ownership 收尾协议，不改变普通 FailJob 规则。
 
 正常停止与 FailJob 共用同一套有界关闭协调机制，但收敛范围不同：
 
@@ -1046,7 +1062,9 @@ FailJob 是用户策略认为当前 Job 不应继续恢复的最终动作。它�
   不再制造新的外部 effect；
 - 两者都在期限内 drain 已由 Sink 接管的操作，并允许可信 completion 推进和
   提交 safe position；
-- FailJob 的 `Run` 结果保留触发终止的根因。
+- FailJob 的 `Run` 结果始终保留第一个触发终止的 error 作为 primary/root cause；停止期间
+  出现的取消、Close、超时或其他错误作为 secondary errors 附加，聚合结果必须允许调用者
+  通过 `errors.Is/As` 识别 primary 与每个 secondary error。
 
 ### 11.2 panic 边界与分类
 
@@ -1071,8 +1089,11 @@ yaspe 内部 panic 表示本不应发生的引擎缺陷。Runtime 监督边界�
 - 强制 FailJob，不进入 Failure Policy、不 Retry、不恢复 Worker 继续处理；
 - 立即停止 admission 和业务处理，仅执行受 deadline 限制的资源收尾；
 - 不再依据 panic 后的 completion 状态推进或提交 position；
-- `Run` 返回 `InternalPanicError`。这类情况必须被定位和修复，recover 不是继续运行的
-  容错机制。
+- 如果该 panic 首先触发 FailJob，`InternalPanicError` 是 primary error；如果它发生在已有
+  FailJob 的停止过程中，原触发 error 仍是 primary，`InternalPanicError` 连同完整 stack
+  作为高严重度 secondary error，不因严重程度改写因果顺序；
+- `Run` 返回的聚合错误可识别该 `InternalPanicError`。这类情况必须被定位和修复，recover
+  不是继续运行的容错机制。
 
 ### 11.3 context 与阻塞点
 
@@ -1086,7 +1107,10 @@ yaspe 内部 panic 表示本不应发生的引擎缺陷。Runtime 监督边界�
 - retry timer；
 - graceful shutdown drain。
 
-Runtime 退出后不得遗留 Source、Worker、Sink 或 retry goroutine。
+Runtime 必须保证自身可控的等待都响应取消并回收。若用户代码或 Connector 违反取消契约，
+shutdown deadline 防止 `Run` 永久卡住；此时允许仍无法强制终止的 goroutine 存活，但必须
+返回 `ShutdownTimeoutError`、报告泄漏位置并用终态 fence 隔离其迟到动作。实现和测试不得
+把这种结果报告为正常、完整回收。
 
 ## 12. Kafka Rebalance
 
@@ -1278,7 +1302,6 @@ checkpoint completion and recovery
 
 ### 16.1 M1 实现前必须收敛
 
-- M1 FailJob 的停止顺序、started work、terminal output 和根因传播；
 - `JobBuilder`、`Stream[T]`、Transformation、factory、`Build` 的具体公开 API 和内部类型擦除边界；
 - M1 指标、确定性测试、race/leak 测试和 benchmark 的实现前审核。
 

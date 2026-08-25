@@ -1185,9 +1185,13 @@ Run returns
 后续执行中重新提供。
 
 正常停止允许 started work 在期限内完成并交给 Sink；普通 FailJob 不启动
-queued work，并取消尚未交给 Sink 的 started work。两者都 drain Sink-owned 操作并只
-提交可信 safe position。若因 yaspe 内部 panic 触发终止，Runtime 只做有界资源收尾，
-不再推进或提交 position；完整 panic value 和 stack 随根因返回。详细契约见
+queued work，取消尚未交给 Sink 的 started work，丢弃尚未开始 Sink handoff 的 terminal
+outputs；已经进入 Sink 的调用则在统一 shutdown deadline 内收敛。普通 FailJob 不由
+position gap 驱动额外 Operator drain，position tracker 只消费最终 completion 事实。
+第一个触发 FailJob 的 error 始终是主根因，停止期间的 Close、超时和 panic 等错误作为
+可通过 `errors.Is/As` 识别的附加错误。若 yaspe 内部 panic 首先触发终止，Runtime 只做
+有界资源收尾且不再推进或提交 position；若 panic 发生在已有 FailJob 的收尾期间，则完整
+panic value 和 stack 作为高严重度附加错误保留，而不改写原始因果顺序。详细契约见
 [Core Execution Model §11](designs/0001-core-execution-model.md#11-failjob取消与关闭)。
 
 优雅停止不能替代故障恢复，因为进程仍可能被强制终止。

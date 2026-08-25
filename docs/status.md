@@ -97,6 +97,10 @@ tracker、Kafka 或 ClickHouse 实现。
   它保留 work groups 与只读快照，仅提供固定失败计划，并使 Accept/Snapshot/Close 线性化。
   Close 同步幂等且不清空结果，并发竞态必须用内部 barrier 确定性验证，详见
   [Core Design §7.1.1](designs/0001-core-execution-model.md#711-m1-同步-memory-sink)。
+- 普通 FailJob 与 position 解耦：queued work 不启动，started Operator 被取消，尚未进入
+  Sink 的 terminal outputs 被丢弃，已进入 Sink 的调用在统一可配置 deadline 内收敛；首个
+  触发 error 始终是根因，停止期间错误作为可识别的 secondary errors，详见
+  [Core Design §11](designs/0001-core-execution-model.md#11-failjob取消与关闭)。
 
 完整索引与权威链接见 [Decision Index](decisions/README.md)。
 
@@ -110,7 +114,8 @@ tracker、Kafka 或 ClickHouse 实现。
 
 ## 当前唯一下一步
 
-讨论并接受 M1 FailJob 的完整停止顺序、started work、terminal output 与根因传播契约。
+讨论并接受 `JobBuilder`、`Stream[T]`、Transformation、factory、`Build` 的具体公开 API
+与内部类型擦除边界。
 
 ## 最近验证
 
@@ -121,7 +126,8 @@ tracker、Kafka 或 ClickHouse 实现。
 
 ## 工作区交接说明
 
-- 当前存在未提交的 Collector/panic、Reader/Memory Source 与 Memory Sink 文档契约更新；
+- 当前存在未提交的 Collector/panic、Reader/Memory Source、Memory Sink 与 FailJob 文档
+  契约更新；
 - `Emit(record)` 代码与 Operator 测试已在当前 HEAD，不属于本次未提交 diff；
 - 尚未开始 M1/M2 Runtime 或 Connector 编码；
 - 新会话必须先检查实际 `git status` 和 diff，不能仅依赖本节；
