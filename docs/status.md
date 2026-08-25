@@ -22,6 +22,8 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | Record / Operator | Accepted | Implemented | Unit Tested | [Core Design §5](designs/0001-core-execution-model.md#5-collector-生命周期与并发) |
 | Collector scope-bound context API | Accepted | Implemented | Unit Tested | [Core Design §5.3](designs/0001-core-execution-model.md#53-emit-契约) |
 | Map / Filter / FlatMap | Accepted | Implemented | Unit Tested | [Core Design §6](designs/0001-core-execution-model.md#6-operator-chain-与-work-attempt-边界) |
+| M1 Reader / Memory Source 语义 | Accepted | Not Started | Not Applicable | [Core Design §4](designs/0001-core-execution-model.md#4-source-物理模型与-runtime-reader) |
+| M1 同步 Memory Sink 语义 | Accepted | Not Started | Not Applicable | [Core Design §7.1.1](designs/0001-core-execution-model.md#711-m1-同步-memory-sink) |
 | 线性 Job Definition | Accepted | Not Started | Not Applicable | [Core Design §3.1](designs/0001-core-execution-model.md#31-第一版线性-job-definition) |
 | M1 Stateless Runtime | Discussing | Not Started | Not Applicable | [Core Design §16.1](designs/0001-core-execution-model.md#161-m1-实现前必须收敛) |
 | M2 Position / Completion | Discussing | Not Started | Not Applicable | [Core Design §16.2](designs/0001-core-execution-model.md#162-m2-实现前必须收敛) |
@@ -76,6 +78,25 @@ tracker、Kafka 或 ClickHouse 实现。
 - Collector 绑定当前 `Process` scope，公开 API 采用 `Emit(record)`；用户代码 panic 被包装为
   带 stack 的 `PanicError` 并交给 Failure Policy，yaspe 内部 panic 则强制 FailJob、有界收尾且
   不推进 position，详见 [Core Design §5.3 与 §11](designs/0001-core-execution-model.md#53-emit-契约)。
+- Reader 可用性通知必须消除 `TryRead -> unavailable -> wait` 的丢失唤醒窗口；M1 采用
+  先发布状态、后发送可合并通知的契约，并要求可控交错的确定性竞态测试，详见
+  [Core Design §4.3](designs/0001-core-execution-model.md#43-可用性通知与控制事件)。
+- M1 Reader 的非阻塞读取在语义上返回 `ReadResult[T], error`，`TryRead` 等只是参考名称；
+  result 只表达 ready/unavailable/finished，error 表达读取失败，invalid state 作为契约错误
+  进入 Failure Policy。正常结束先交付
+  已缓存记录，读取失败则优先于尚未交接的缓存，详见
+  [Core Design §4.2](designs/0001-core-execution-model.md#42-非阻塞-reader)。
+- Memory Source 定位为动态有界的 Runtime 参考 Source、确定性测试设施、benchmark 输入和
+  本地示例数据源；Runtime-facing Source 与 producer Controller 分离，并已接受 Submit 背压/
+  ownership、Finish drain、Fail 根因、Runtime Close 和并发终态线性化语义，详见
+  [Core Design §4.7](designs/0001-core-execution-model.md#47-m1-memory-source)。
+- Source admission 在读取前预留完整 reservation；ready 返回即转移 ownership 和 completion
+  responsibility，Runtime 必须先无失败地绑定到预留 work slot，之后才观察取消或调度，
+  详见 [Core Design §4.4](designs/0001-core-execution-model.md#44-source-admission-与所有权)。
+- M1 Memory Sink 对一个 work 的 terminal outputs 一次同步全收或全拒，零输出不调用 Sink；
+  它保留 work groups 与只读快照，仅提供固定失败计划，并使 Accept/Snapshot/Close 线性化。
+  Close 同步幂等且不清空结果，并发竞态必须用内部 barrier 确定性验证，详见
+  [Core Design §7.1.1](designs/0001-core-execution-model.md#711-m1-同步-memory-sink)。
 
 完整索引与权威链接见 [Decision Index](decisions/README.md)。
 
@@ -89,7 +110,7 @@ tracker、Kafka 或 ClickHouse 实现。
 
 ## 当前唯一下一步
 
-讨论并接受 M1 Source Reader、admission 与 Memory Source 生命周期契约。
+讨论并接受 M1 FailJob 的完整停止顺序、started work、terminal output 与根因传播契约。
 
 ## 最近验证
 
@@ -100,7 +121,8 @@ tracker、Kafka 或 ClickHouse 实现。
 
 ## 工作区交接说明
 
-- 本次 Collector context 与 panic/FailJob 契约及 `Emit(record)` 代码同步尚未提交；
+- 当前存在未提交的 Collector/panic、Reader/Memory Source 与 Memory Sink 文档契约更新；
+- `Emit(record)` 代码与 Operator 测试已在当前 HEAD，不属于本次未提交 diff；
 - 尚未开始 M1/M2 Runtime 或 Connector 编码；
 - 新会话必须先检查实际 `git status` 和 diff，不能仅依赖本节；
 - 当前本地工具链：`go1.27.0-X:nodwarf5 linux/amd64`；`go.mod` 要求 Go 1.27。

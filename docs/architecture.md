@@ -421,11 +421,21 @@ ownership 中断的 split 才可继续使用原缓存。
 第一版面向 Runtime 采用非阻塞 Reader 模型。Reader 只立即返回已经可用的业务记录、
 暂时无数据或 Source 结束等结果，不在 Runtime 的数据获取调用中等待外部 I/O。
 暂时无数据时，Connector 通过可等待的可用性通知唤醒 Runtime，避免忙轮询。
+通知是不可丢失的重新检查触发器，Connector 必须先发布 Reader 状态再通知，并消除
+`TryRead -> unavailable -> wait` 的 check-then-wait 窗口；通知可合并、重复和过期，下一次
+Reader 结果才是状态权威。完整不变量和竞态测试要求见
+[Core Execution Model §4.3](designs/0001-core-execution-model.md#43-可用性通知与控制事件)。
 
 外部系统的阻塞读取、批量 poll 和 session 维护由 Connector 内部适配，必要时可使用
 专用 I/O goroutine。Runtime 只在获得 in-flight permit 后才从 Reader 取走记录；
 成功取走即完成 Source 到 Runtime 的记录级责任交接。可用性通知只表示
 “可能有数据”，如果 Runtime 取得 permit 后未能取到记录，应归还该容量。
+
+Runtime 在读取前预留包含 permit、work identity、追踪与调度容量的完整 admission
+reservation。Reader 返回 ready 是 ownership 与 completion responsibility 转移点；Runtime
+必须立即以不阻塞、无普通失败且不调用用户代码的操作把记录绑定到 reservation，
+之后才可观察取消或调度 Worker。详细顺序与故障边界见
+[Core Execution Model §4.4](designs/0001-core-execution-model.md#44-source-admission-与所有权)。
 
 业务记录与 Source 控制事件使用独立路径。可用性、正常结束、读取失败、
 split assignment/revoke、ownership 变化和宿主取消不伪装成业务 Record，
@@ -433,6 +443,22 @@ split assignment/revoke、ownership 变化和宿主取消不伪装成业务 Reco
 新的数据交接；一旦 Runtime 已知当前 ownership 失效，就不得再接受该 ownership 的记录。
 
 这些条款固定 Source 驱动语义，不预先固定 Go 方法名、通知载体或内部缓冲实现。
+
+M1 已固定非阻塞读取在语义上返回 `ReadResult[T], error`；Design 中的 `TryRead` 和
+`Available` 只是参考名称，容量为 1 的 channel 也只是参考通知实现，不是对最终公开
+Go API 或通知载体的定稿。任何最终实现都必须保持不丢失唤醒的语义。`ReadResult` 的
+正常状态为 ready、unavailable 和 finished，零值/unknown state 通过
+`InvalidReadResultError` 进入 Failure Policy；读取 error 与正常状态分开返回。正常结束先
+drain Connector 缓存再呈现永久 finished，读取失败则优先于尚未交接的缓存数据。
+完整结果和错误契约见 [Core Execution Model §4.2](designs/0001-core-execution-model.md#42-非阻塞-reader)。
+
+M1 Memory Source 是 Runtime 参考实现、确定性测试设施、benchmark 输入和本地示例数据源，
+不是生产级队列。它使用动态有界缓冲并分离 Runtime-facing Source 与 producer-facing
+Controller；Controller 提供可取消的背压提交、正常结束和失败注入语义，Close 仍由
+Runtime 管理。正常结束 drain 已缓存记录，失败优先于尚未交接缓存；所有并发操作
+在同一生命周期状态机上线性化。完整定位、ownership、终态竞争和测试契约见
+[Core Execution Model §4.7](designs/0001-core-execution-model.md#47-m1-memory-source)。方法名和具体公开
+Go API 仍留待实现阶段商议。
 
 Source 数据进入业务类型的边界固定为：Connector 读取外部原始数据，配置的
 deserializer/parser 产生业务值 `T`，并在正式交接前由 Connector 有界持有。Runtime 取得
@@ -458,6 +484,15 @@ ownership generation、work identity、attempt、completion 和 permit 等正确
 - 不把“进入 Sink 队列”报告为“外部写入完成”；
 - 不独立宣称端到端 exactly-once；
 - 不自行推进 Source position，除非通过 Runtime 协调协议。
+
+M1 Memory Sink 是同步 Runtime 参考 Sink、结果断言工具、benchmark 终点和本地示例输出。
+它每次全收或全拒一个 work 的全部 terminal outputs，成功返回即同步完成并转移整组
+ownership；零输出不调用 Sink。Memory Sink 保留 work groups，提供组视图和扁平只读快照，
+支持固定确定性失败计划，并在同一线性化边界上协调并发接管、快照与 Close。
+Close 同步、幂等且不清空结果；没有异步 completion、外部 in-flight、flush 或跨 work 回滚。
+详细契约与确定性并发测试要求见
+[Core Execution Model §7.1.1](designs/0001-core-execution-model.md#711-m1-同步-memory-sink)。参考方法名
+不锁定最终公开 Go API。
 
 Chain 成功后的最终输出先保留在 Runtime 的有界末端边界。一个 work 的输出在责任上
 整组交接给 Sink：全部接受或全部不接受；这不要求它们在同一个物理 batch 中写入，
