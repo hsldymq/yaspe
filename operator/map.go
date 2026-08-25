@@ -38,7 +38,7 @@ func (m *Map[I, O]) Process(
 		return err
 	}
 
-	return output.Emit(ctx, yaspe.Record[O]{
+	return output.Emit(yaspe.Record[O]{
 		Value: value,
 	})
 }

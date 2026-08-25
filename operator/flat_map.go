@@ -43,7 +43,7 @@ func (f *FlatMap[I, O]) Process(
 	}
 
 	for _, value := range values {
-		if err := output.Emit(ctx, yaspe.Record[O]{Value: value}); err != nil {
+		if err := output.Emit(yaspe.Record[O]{Value: value}); err != nil {
 			return err
 		}
 	}

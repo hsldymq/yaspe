@@ -15,10 +15,7 @@ type collectingCollector[T any] struct {
 	err     error
 }
 
-func (c *collectingCollector[T]) Emit(
-	_ context.Context,
-	record yaspe.Record[T],
-) error {
+func (c *collectingCollector[T]) Emit(record yaspe.Record[T]) error {
 	if c.err != nil {
 		return c.err
 	}

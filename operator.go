@@ -4,7 +4,7 @@ import "context"
 
 // Collector 接收 Operator 产生的输出。
 type Collector[T any] interface {
-	Emit(context.Context, Record[T]) error
+	Emit(Record[T]) error
 }
 
 // Operator 将一条输入记录转换为零条或多条输出记录。

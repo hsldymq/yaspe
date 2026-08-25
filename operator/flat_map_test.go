@@ -18,10 +18,7 @@ type failingAtCollector[T any] struct {
 	calls   int
 }
 
-func (c *failingAtCollector[T]) Emit(
-	_ context.Context,
-	record yaspe.Record[T],
-) error {
+func (c *failingAtCollector[T]) Emit(record yaspe.Record[T]) error {
 	c.calls++
 	if c.calls == c.failAt {
 		return c.err

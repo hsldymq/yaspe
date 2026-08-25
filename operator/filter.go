@@ -44,5 +44,5 @@ func (f *Filter[T]) Process(
 		return nil
 	}
 
-	return output.Emit(ctx, input)
+	return output.Emit(input)
 }
