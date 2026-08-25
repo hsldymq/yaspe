@@ -338,6 +338,11 @@ Collector becomes invalid
 
 ### 5.3 Emit 契约
 
+- `Collector.Emit` 的公开形式为 `Emit(record)`，不接收调用方传入的 context；
+- Runtime 创建 Collector 时将当前 work attempt 的 `Process` context 绑定到 Collector；
+- `Emit` 在等待下游容量、传播背压和解除阻塞时只使用该绑定 context。用户
+  Operator 不能用无关 context 脱离当前 attempt 的取消边界；
+- `Process` 仍显式接收 context，供用户计算、I/O 和派生操作使用；
 - `Emit(nil)` 表示当前 Collector 已接受输出并取得后续责任；
 - Collector 接受不等于最终 Sink 已经完成；
 - `Emit` 失败表示本次输出未被接受；
@@ -793,7 +798,42 @@ FailJob 是用户策略认为当前 Job 不应继续恢复的最终动作。它�
 - 到期仍未知的操作不标记成功；
 - 未提交输入由可重放 Source 在后续执行中重放。
 
-### 11.2 context 与阻塞点
+正常停止与 FailJob 共用同一套有界关闭协调机制，但收敛范围不同：
+
+- 正常停止在期限内允许已开始的 work 完成 Chain 并把 terminal output 交给 Sink；
+- 普通 FailJob 不启动 queued work，取消尚未把 terminal output 交给 Sink 的 started work，
+  不再制造新的外部 effect；
+- 两者都在期限内 drain 已由 Sink 接管的操作，并允许可信 completion 推进和
+  提交 safe position；
+- FailJob 的 `Run` 结果保留触发终止的根因。
+
+### 11.2 panic 边界与分类
+
+Runtime 只在它主动调用用户代码的最外层受控入口设置窄 recover boundary。M1 至少
+包括 Operator factory、`Operator.Process` 和 Failure Policy；内置 Operator 在 `Process` 内调用的
+transform/predicate 由外层 `Process` 边界覆盖，不重复嵌套 recover。
+
+`Operator.Process` 及其用户回调 panic 时：
+
+- Runtime 捕获 panic value 和当次 stack，将其包装为可识别的 `PanicError`；
+- `PanicError` 只描述失败事实，与其他未被吸收的 error 一样进入 Job 级 Failure Policy，
+  由策略选择 Retry 或 FailJob；
+- 每次 panic 的 value 与 stack 都保留为该 attempt 的诊断；
+- Operator factory panic 发生在可执行实例建立前，作为启动失败直接返回；Failure Policy 自身
+  panic 不能再递归询问同一策略，直接触发 FailJob；
+- 用户代码 panic 不穿透 Runtime 并终止嵌入 yaspe 的宿主进程。
+
+yaspe 内部 panic 表示本不应发生的引擎缺陷。Runtime 监督边界可 recover 以便诊断和
+有界收尾，但必须：
+
+- 捕获原始 panic value 和 stack，形成 `InternalPanicError`；
+- 强制 FailJob，不进入 Failure Policy、不 Retry、不恢复 Worker 继续处理；
+- 立即停止 admission 和业务处理，仅执行受 deadline 限制的资源收尾；
+- 不再依据 panic 后的 completion 状态推进或提交 position；
+- `Run` 返回 `InternalPanicError`。这类情况必须被定位和修复，recover 不是继续运行的
+  容错机制。
+
+### 11.3 context 与阻塞点
 
 宿主取消必须最终解除或终结 Runtime 管理的所有等待路径，包括：
 
@@ -974,8 +1014,6 @@ checkpoint completion and recovery
 
 ### 16.1 M1 实现前必须收敛
 
-- `Collector.Emit` 的 context 长期显式传递还是绑定到 Process scope；
-- 用户函数 panic 的恢复、stack 记录和 FailJob 语义；
 - M1 FailJob 的停止顺序、started work、terminal output、同步 Memory Sink 和根因传播；
 - Source Reader/admission 的最小接口、Memory Source 生命周期和 completion responsibility 起点；
 - `JobBuilder`、`Stream[T]`、Transformation、factory、`Build` 的具体公开 API 和内部类型擦除边界；

@@ -19,7 +19,8 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 
 | 能力 | Design | Implementation | Verification | 权威位置 |
 |---|---|---|---|---|
-| Record / Collector / Operator | Accepted | Implemented | Unit Tested | [Core Design §5](designs/0001-core-execution-model.md#5-collector-生命周期与并发) |
+| Record / Operator | Accepted | Implemented | Unit Tested | [Core Design §5](designs/0001-core-execution-model.md#5-collector-生命周期与并发) |
+| Collector scope-bound context API | Accepted | Implemented | Unit Tested | [Core Design §5.3](designs/0001-core-execution-model.md#53-emit-契约) |
 | Map / Filter / FlatMap | Accepted | Implemented | Unit Tested | [Core Design §6](designs/0001-core-execution-model.md#6-operator-chain-与-work-attempt-边界) |
 | 线性 Job Definition | Accepted | Not Started | Not Applicable | [Core Design §3.1](designs/0001-core-execution-model.md#31-第一版线性-job-definition) |
 | M1 Stateless Runtime | Discussing | Not Started | Not Applicable | [Core Design §16.1](designs/0001-core-execution-model.md#161-m1-实现前必须收敛) |
@@ -72,6 +73,9 @@ tracker、Kafka 或 ClickHouse 实现。
   `SinkUnknown`；随后使 reporter/notifier 失效，迟到调用可安全返回但不得推进 completion
   或 position；Connector 负责收敛自身可控资源，Runtime 负责隔离无法完全杜绝的外部迟到
   callback。
+- Collector 绑定当前 `Process` scope，公开 API 采用 `Emit(record)`；用户代码 panic 被包装为
+  带 stack 的 `PanicError` 并交给 Failure Policy，yaspe 内部 panic 则强制 FailJob、有界收尾且
+  不推进 position，详见 [Core Design §5.3 与 §11](designs/0001-core-execution-model.md#53-emit-契约)。
 
 完整索引与权威链接见 [Decision Index](decisions/README.md)。
 
@@ -79,46 +83,13 @@ tracker、Kafka 或 ClickHouse 实现。
 
 完整清单见 [Core Design §16](designs/0001-core-execution-model.md#16-当前开放问题)。当前顺序：
 
-1. Collector context 与 panic/FailJob；
-2. M1 Source Reader、admission、Memory Sink 和 Job API 定稿；
-3. M2 Retry、position/Envelope、异步 Sink/completion；
-4. Kafka/ClickHouse Connector、指标、故障注入和交付保证审核。
-
-### 当前问题：Collector context 与 panic/FailJob
-
-问题：`Collector.Emit` 是否继续显式接收 context，还是绑定到当前 `Process` scope；用户函数
-或 Operator panic 时 Runtime 是否 recover、保留哪些诊断信息，并如何触发 FailJob？
-
-影响阶段：M1。
-
-已知约束：
-
-- `Process` 已显式接收当前 attempt context，现有 `Collector.Emit` 也接收 context；
-- Collector 只在对应 `Process` goroutine 中串行使用，`Process` 返回后失效，因此可以绑定当前
-  execution scope；
-- Runtime 管理的所有阻塞点必须响应取消，但调用方传入不同或脱离当前 attempt 的 context
-  可能破坏统一取消和责任边界；
-- panic 不能导致 Runtime 静默丢失 work 或让 Worker goroutine 无诊断退出，也不能被当作正常
-  业务 error 自动忽略。
-
-候选方向：
-
-- 保留 `Emit(ctx, record)`，并定义传入 context 必须与 `Process` context 相同或由其派生；
-- 改为 `Emit(record)`，由 Collector 内部绑定当前 attempt context，消除错误 context 的可能；
-- panic 统一在 Runtime 调用用户代码的边界 recover，记录 panic value 与 stack，并直接进入
-  FailJob；或把 panic 包装为普通 attempt error 再交给 Retry 策略。
-
-当前倾向：尚未接受。需要比较 API 显式性与 execution scope 一致性，并决定 panic 是否允许
-进入可能重试用户代码的普通错误路径。
-
-完成条件：Core Design 明确 Collector context 来源、取消传播、panic recovery 边界、stack
-诊断、错误分类和 FailJob 动作，并从本节移除。
+1. M1 Source Reader、admission、Memory Sink 和 Job API 定稿；
+2. M2 Retry、position/Envelope、异步 Sink/completion；
+3. Kafka/ClickHouse Connector、指标、故障注入和交付保证审核。
 
 ## 当前唯一下一步
 
-讨论并接受 Collector context 与用户函数 panic/FailJob 契约。
-
-在该问题收敛前不开始受其影响的 Runtime、Connector 或 Sink 实现。
+讨论并接受 M1 Source Reader、admission 与 Memory Source 生命周期契约。
 
 ## 最近验证
 
@@ -129,7 +100,7 @@ tracker、Kafka 或 ClickHouse 实现。
 
 ## 工作区交接说明
 
-- 当前存在未提交的文档治理与 Emit ownership 设计更新；
+- 本次 Collector context 与 panic/FailJob 契约及 `Emit(record)` 代码同步尚未提交；
 - 尚未开始 M1/M2 Runtime 或 Connector 编码；
 - 新会话必须先检查实际 `git status` 和 diff，不能仅依赖本节；
 - 当前本地工具链：`go1.27.0-X:nodwarf5 linux/amd64`；`go.mod` 要求 Go 1.27。

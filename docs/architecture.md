@@ -327,10 +327,11 @@ FlatMap  1 → 0..N (finite in early versions)
 
 当前接受的语义：
 
-- 第一版保留 `Collector.Emit(ctx, record)` 的显式 context 参数；
-- 内置 Operator 默认将 `Process` 接收的 context 原样透传给 `Emit`；
+- `Collector.Emit(record)` 不显式接收 context；Runtime 将当前 `Process` scope 绑定到
+  Collector，`Emit` 使用该 context 解除背压和容量等待；
 - 普通 `Map`、`Filter` 和 `FlatMap` 构造 API 的使用方无需直接处理 context；
-- 显式 context 为自定义 Operator 和未来算子保留使用派生 context 的能力，可在出现具体生命周期问题后重新评估；
+- `Process` 仍显式接收 context，供用户计算和 I/O 使用，但用户不能替换 Collector 所属
+  attempt 的取消边界；
 - `Emit` 可以因为有界下游和背压而阻塞；
 - context 用于解除阻塞和优雅取消；
 - `Emit` 返回 `nil` 表示本次输出已被当前 Process 调用的 Collector 接受；
@@ -813,7 +814,7 @@ Map[I, O]
       │ transform
       v
 MapFunc[I, O]
-      │ Emit(ctx, Record[O])
+      │ Emit(Record[O])
       v
 Collector[O]
 ```
@@ -1147,6 +1148,12 @@ Run returns
 前进后应尽快提交。到期仍无法确认的操作不得标记为成功。Runtime 在释放
 资源前最后尽力持久化当前安全进度，其余未确认记录由可重放 Source 在
 后续执行中重新提供。
+
+正常停止允许 started work 在期限内完成并交给 Sink；普通 FailJob 不启动
+queued work，并取消尚未交给 Sink 的 started work。两者都 drain Sink-owned 操作并只
+提交可信 safe position。若因 yaspe 内部 panic 触发终止，Runtime 只做有界资源收尾，
+不再推进或提交 position；完整 panic value 和 stack 随根因返回。详细契约见
+[Core Execution Model §11](designs/0001-core-execution-model.md#11-failjob取消与关闭)。
 
 优雅停止不能替代故障恢复，因为进程仍可能被强制终止。
 
