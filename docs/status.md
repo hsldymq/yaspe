@@ -1,6 +1,6 @@
 # yaspe Current Status
 
-最后更新：2026-08-25
+最后更新：2026-08-26
 
 本文是动态交接快照，不是完整设计记录。完整契约见正式 Design，决定背景和取舍见
 [决策索引](decisions/README.md)，维护规则见 [Documentation Governance](governance.md)。
@@ -19,15 +19,15 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 
 | 能力 | Design | Implementation | Verification | 权威位置 |
 |---|---|---|---|---|
-| Record / Operator | Accepted | Implemented | Unit Tested | [Core Design §5](designs/0001-core-execution-model.md#5-collector-生命周期与并发) |
-| Collector scope-bound context API | Accepted | Implemented | Unit Tested | [Core Design §5.3](designs/0001-core-execution-model.md#53-emit-契约) |
-| Map / Filter / FlatMap | Accepted | Implemented | Unit Tested | [Core Design §6](designs/0001-core-execution-model.md#6-operator-chain-与-work-attempt-边界) |
-| M1 Reader / Memory Source 语义 | Accepted | Not Started | Not Applicable | [Core Design §4](designs/0001-core-execution-model.md#4-source-物理模型与-runtime-reader) |
-| M1 同步 Memory Sink 语义 | Accepted | Not Started | Not Applicable | [Core Design §7.1.1](designs/0001-core-execution-model.md#711-m1-同步-memory-sink) |
-| 线性 Job Definition | Accepted | Not Started | Not Applicable | [Core Design §3.1](designs/0001-core-execution-model.md#31-第一版线性-job-definition) |
-| M1 Stateless Runtime | Discussing | Not Started | Not Applicable | [Core Design §16.1](designs/0001-core-execution-model.md#161-m1-实现前必须收敛) |
-| M2 Position / Completion | Discussing | Not Started | Not Applicable | [Core Design §16.2](designs/0001-core-execution-model.md#162-m2-实现前必须收敛) |
-| 异步 Sink 协议 | Discussing | Not Started | Not Applicable | [Core Design §7](designs/0001-core-execution-model.md#7-sink-交接与-completion) |
+| Record / Operator | Accepted | Implemented | Unit Tested | [Operator Design §1](designs/0004-operator-attempt-and-collector.md#1-collector-生命周期与并发) |
+| Collector scope-bound context API | Accepted | Implemented | Unit Tested | [Operator Design §1.3](designs/0004-operator-attempt-and-collector.md#13-emit-契约) |
+| Map / Filter / FlatMap | Accepted | Implemented | Unit Tested | [Operator Design §2](designs/0004-operator-attempt-and-collector.md#2-operator-chain-与-work-attempt-边界) |
+| M1 Reader / Memory Source 语义 | Accepted | Not Started | Not Applicable | [Source Design](designs/0003-source-reader-and-admission.md) |
+| M1 同步 Memory Sink 语义 | Accepted | Not Started | Not Applicable | [Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink) |
+| 线性 Job Definition | Accepted | Not Started | Not Applicable | [Job Design](designs/0002-job-definition-and-runtime-instantiation.md) |
+| M1 Stateless Runtime | Discussing | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
+| M2 Position / Completion | Discussing | Not Started | Not Applicable | [Verification Design §2.2](designs/0008-runtime-verification-and-observability.md#22-m2-实现前必须收敛) |
+| 异步 Sink 协议 | Discussing | Not Started | Not Applicable | [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | Kafka Consumer Group / Rebalance | Accepted | Not Started | Not Applicable | [ADR-0002](decisions/0002-use-kafka-consumer-group-for-external-coordination.md) |
 | Kafka / ClickHouse Connector | Discussing | Not Started | Not Applicable | [Roadmap M2](roadmap.md#6-m2source-position完成跟踪与生产级-sink) |
 | Dead Letter / Side Output | Planned for later | Not Started | Not Applicable | [Roadmap M4](roadmap.md#8-m4keyby分区执行与逻辑物理执行图) |
@@ -59,8 +59,9 @@ tracker、Kafka 或 ClickHouse 实现。
 
 - 仓库文档、代码和测试作为跨会话项目记忆；Design、Implementation、Verification 分开跟踪，
   新会话按统一入口和 Status 接力，详见 [ADR-0003](decisions/0003-use-repository-docs-as-project-memory.md)；
-- JobBuilder 持有 Transformation 定义，`Stream[T]` 提供 Go 1.27 泛型 fluent API，`Build`
-  产生不可变 Job 快照；第一版只接受单 Source、线性 Chain 和单 Sink；
+- Job Definition 使用 `JobDraft → Stream[T] → JobBuilder → Job` 的 Go 1.27 type-state fluent
+  API；`From/Transform/SinkTo` 及 Func 变体保存 Factory，Build 产生不可变 Job 快照且不创建
+  运行资源；第一版只接受单 Source、线性 Chain 和单 Sink；
 - 每条 execution lane 创建独立 Operator 包装实例，同一用户函数值可以跨 lane 共享并并发调用；
 - Runtime 不提供 `SkipRecord`、`DiscardRecord` 或 Transformation `OnError`；可忽略业务错误
   由用户函数收敛为正常零输出，未处理 error 进入 Job 级 Retry/FailJob；
@@ -77,45 +78,50 @@ tracker、Kafka 或 ClickHouse 实现。
   callback。
 - Collector 绑定当前 `Process` scope，公开 API 采用 `Emit(record)`；用户代码 panic 被包装为
   带 stack 的 `PanicError` 并交给 Failure Policy，yaspe 内部 panic 则强制 FailJob、有界收尾且
-  不推进 position，详见 [Core Design §5.3 与 §11](designs/0001-core-execution-model.md#53-emit-契约)。
+  不推进 position，详见 [Operator Design §1.3](designs/0004-operator-attempt-and-collector.md#13-emit-契约)
+  与 [Failure Design §2](designs/0006-failure-panic-and-shutdown.md#2-failjob取消与关闭)。
 - Reader 可用性通知必须消除 `TryRead -> unavailable -> wait` 的丢失唤醒窗口；M1 采用
   先发布状态、后发送可合并通知的契约，并要求可控交错的确定性竞态测试，详见
-  [Core Design §4.3](designs/0001-core-execution-model.md#43-可用性通知与控制事件)。
+  [Source Design §1.3](designs/0003-source-reader-and-admission.md#13-可用性通知与控制事件)。
 - M1 Reader 的非阻塞读取在语义上返回 `ReadResult[T], error`，`TryRead` 等只是参考名称；
   result 只表达 ready/unavailable/finished，error 表达读取失败，invalid state 作为契约错误
   进入 Failure Policy。正常结束先交付
   已缓存记录，读取失败则优先于尚未交接的缓存，详见
-  [Core Design §4.2](designs/0001-core-execution-model.md#42-非阻塞-reader)。
+  [Source Design §1.2](designs/0003-source-reader-and-admission.md#12-非阻塞-reader)。
 - Memory Source 定位为动态有界的 Runtime 参考 Source、确定性测试设施、benchmark 输入和
   本地示例数据源；Runtime-facing Source 与 producer Controller 分离，并已接受 Submit 背压/
   ownership、Finish drain、Fail 根因、Runtime Close 和并发终态线性化语义，详见
-  [Core Design §4.7](designs/0001-core-execution-model.md#47-m1-memory-source)。
+  [Source Design §1.7](designs/0003-source-reader-and-admission.md#17-m1-memory-source)。
 - Source admission 在读取前预留完整 reservation；ready 返回即转移 ownership 和 completion
   responsibility，Runtime 必须先无失败地绑定到预留 work slot，之后才观察取消或调度，
-  详见 [Core Design §4.4](designs/0001-core-execution-model.md#44-source-admission-与所有权)。
+  详见 [Source Design §1.4](designs/0003-source-reader-and-admission.md#14-source-admission-与所有权)。
 - M1 Memory Sink 对一个 work 的 terminal outputs 一次同步全收或全拒，零输出不调用 Sink；
   它保留 work groups 与只读快照，仅提供固定失败计划，并使 Accept/Snapshot/Close 线性化。
   Close 同步幂等且不清空结果，并发竞态必须用内部 barrier 确定性验证，详见
-  [Core Design §7.1.1](designs/0001-core-execution-model.md#711-m1-同步-memory-sink)。
+  [Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink)。
 - 普通 FailJob 与 position 解耦：queued work 不启动，started Operator 被取消，尚未进入
   Sink 的 terminal outputs 被丢弃，已进入 Sink 的调用在统一可配置 deadline 内收敛；首个
   触发 error 始终是根因，停止期间错误作为可识别的 secondary errors，详见
-  [Core Design §11](designs/0001-core-execution-model.md#11-failjob取消与关闭)。
+  [Failure Design §2](designs/0006-failure-panic-and-shutdown.md#2-failjob取消与关闭)。
+- Job 可被不同 Runtime 重复并发执行，Runtime 是一次性执行容器；每次 Run 创建一个 Source、
+  每条 lane 一套 Operator Chain 和一个共享 Sink。Operator 可选实现独立生命周期接口，组件
+  按 Sink、Operator、Source 顺序 Open 并逆序清理；私有 typed adapter 承担异构类型擦除，
+  详见 [Job Design](designs/0002-job-definition-and-runtime-instantiation.md)。
 
-完整索引与权威链接见 [Decision Index](decisions/README.md)。
+能力契约与依赖见 [Design Map](designs/design-map.md)，长期取舍索引见
+[Decision Index](decisions/README.md)。
 
 ## 当前开放问题与顺序
 
-完整清单见 [Core Design §16](designs/0001-core-execution-model.md#16-当前开放问题)。当前顺序：
+完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
 
-1. M1 Source Reader、admission、Memory Sink 和 Job API 定稿；
+1. M1 指标、确定性测试、race/leak 测试和 benchmark 审核；
 2. M2 Retry、position/Envelope、异步 Sink/completion；
-3. Kafka/ClickHouse Connector、指标、故障注入和交付保证审核。
+3. Kafka/ClickHouse Connector、M2 指标、故障注入和交付保证审核。
 
 ## 当前唯一下一步
 
-讨论并接受 `JobBuilder`、`Stream[T]`、Transformation、factory、`Build` 的具体公开 API
-与内部类型擦除边界。
+讨论并接受 M1 指标、确定性测试、race/leak 测试和 benchmark 的实现前审核。
 
 ## 最近验证
 
@@ -126,8 +132,8 @@ tracker、Kafka 或 ClickHouse 实现。
 
 ## 工作区交接说明
 
-- 当前存在未提交的 Collector/panic、Reader/Memory Source、Memory Sink 与 FailJob 文档
-  契约更新；
+- 当前存在未提交的 Design Map、按能力拆分的权威 Design、Architecture/Status/Roadmap/ADR/
+  Decision Index 链接迁移，以及 Job Definition 契约更新；
 - `Emit(record)` 代码与 Operator 测试已在当前 HEAD，不属于本次未提交 diff；
 - 尚未开始 M1/M2 Runtime 或 Connector 编码；
 - 新会话必须先检查实际 `git status` 和 diff，不能仅依赖本节；

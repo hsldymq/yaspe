@@ -90,7 +90,7 @@ Definition Plane 让用户表达“计算什么”，不直接决定 goroutine�
 职责：
 
 - 表达一份完整流处理作业；
-- 由 `JobBuilder` 持有 Source、Transformation、Sink 和作业级配置；
+- 由 type-state Job Definition API 持有 Source、Transformation、Sink 和作业级配置；
 - 作为编译与运行入口；
 - 保持声明式，不在构建过程中启动计算。
 
@@ -104,19 +104,31 @@ Definition Plane 让用户表达“计算什么”，不直接决定 goroutine�
 关系：
 
 ```text
-JobBuilder
-├── Transformation definitions
-└── Job Options
-        │ Build / validate / snapshot
-        v
-immutable Job Definition
+JobDraft
+└── From / FromFunc
+    └── Stream[T]
+        ├── Map / Filter / FlatMap
+        ├── Transform / TransformFunc
+        └── SinkTo / SinkToFunc
+            └── JobBuilder.Build
+                └── immutable Job
 ```
 
-`To` 只添加 Sink Transformation；`Build` 为当前逻辑拓扑创建不可变 Job 快照。第一版
+不同阶段类型只暴露合法方法；`SinkTo` 后不能继续转换。每次调用不可变地派生定义，旧
+Stream 可用于形成另一个独立 Job，而不修改已有定义。`Build` 为当前逻辑拓扑创建不可变
+Job 快照，不调用 Factory 或打开运行资源。第一版
 Build 只接受恰好一个 Source、零个或多个 Operator Transformation、恰好一个 Sink 组成的
-无分支线性 Pipeline。Builder 后续变化不影响已构建 Job，Builder 本身不保证并发安全。
+无分支线性 Pipeline。
 内部保留 Transformation 身份和上游引用，未来可以放宽结构校验并增加图编译阶段，但不应
-为了远期 DAG 在 M1 预建完整图优化器。
+为了远期 DAG 在 M1 预建完整图优化器。公开泛型保证节点类型衔接，私有 typed adapter
+完成 Runtime 所需的异构存储；类型断言失败属于引擎不变量缺陷。
+
+Job 保存可重复、可并发创建运行实例的 Source/Operator/Sink Factory；Connector Builder
+负责先冻结配置，Factory `Create()` 只构造未打开实例，外部初始化放在 `Open(ctx)`。一次
+Run 创建一个 Source、每条 lane 一套 Operator Chain 和一个共享 Sink。Operator 可选择实现
+独立的 `OperatorLifecycle`；启动按 Sink、Operator、Source 顺序 Open，失败或停止时逆序
+清理。Job 可被不同 Runtime 重复并发执行，Runtime 本身是一次性执行容器。
+完整契约见 [Job Definition Design](designs/0002-job-definition-and-runtime-instantiation.md)。
 
 ### 5.2 Typed Stream / DSL
 
@@ -125,7 +137,8 @@ Build 只接受恰好一个 Source、零个或多个 Operator Transformation、�
 职责：
 
 - 使用 Go 泛型在编译期约束相邻 Operator 的输入输出类型；
-- 使用 Go 1.27 泛型方法提供 `From`、Map、Filter、FlatMap、`To` 等 fluent 构建入口；
+- 使用 Go 1.27 泛型方法提供 `From`、Map、Filter、FlatMap、`Transform`、`SinkTo` 等 fluent
+  构建入口；
 - 以 `Stream[T]` 作为指向当前 Transformation 的类型安全句柄；
 - 生成 Transformation 及其引用关系，而不是传输运行期数据。
 
@@ -308,7 +321,8 @@ FlatMap  1 → 0..N (finite in early versions)
 
 ### 7.4 Collector
 
-状态：`Current`，具体 Runtime 实现尚未出现。生命周期与并发决定见 [Core Execution Model](designs/0001-core-execution-model.md)。
+状态：`Current`，具体 Runtime 实现尚未出现。生命周期与并发决定见
+[Operator Attempt Design](designs/0004-operator-attempt-and-collector.md)。
 
 职责：
 
@@ -424,7 +438,7 @@ ownership 中断的 split 才可继续使用原缓存。
 通知是不可丢失的重新检查触发器，Connector 必须先发布 Reader 状态再通知，并消除
 `TryRead -> unavailable -> wait` 的 check-then-wait 窗口；通知可合并、重复和过期，下一次
 Reader 结果才是状态权威。完整不变量和竞态测试要求见
-[Core Execution Model §4.3](designs/0001-core-execution-model.md#43-可用性通知与控制事件)。
+[Source Design §1.3](designs/0003-source-reader-and-admission.md#13-可用性通知与控制事件)。
 
 外部系统的阻塞读取、批量 poll 和 session 维护由 Connector 内部适配，必要时可使用
 专用 I/O goroutine。Runtime 只在获得 in-flight permit 后才从 Reader 取走记录；
@@ -435,7 +449,7 @@ Runtime 在读取前预留包含 permit、work identity、追踪与调度容量�
 reservation。Reader 返回 ready 是 ownership 与 completion responsibility 转移点；Runtime
 必须立即以不阻塞、无普通失败且不调用用户代码的操作把记录绑定到 reservation，
 之后才可观察取消或调度 Worker。详细顺序与故障边界见
-[Core Execution Model §4.4](designs/0001-core-execution-model.md#44-source-admission-与所有权)。
+[Source Design §1.4](designs/0003-source-reader-and-admission.md#14-source-admission-与所有权)。
 
 业务记录与 Source 控制事件使用独立路径。可用性、正常结束、读取失败、
 split assignment/revoke、ownership 变化和宿主取消不伪装成业务 Record，
@@ -450,14 +464,14 @@ Go API 或通知载体的定稿。任何最终实现都必须保持不丢失唤�
 正常状态为 ready、unavailable 和 finished，零值/unknown state 通过
 `InvalidReadResultError` 进入 Failure Policy；读取 error 与正常状态分开返回。正常结束先
 drain Connector 缓存再呈现永久 finished，读取失败则优先于尚未交接的缓存数据。
-完整结果和错误契约见 [Core Execution Model §4.2](designs/0001-core-execution-model.md#42-非阻塞-reader)。
+完整结果和错误契约见 [Source Design §1.2](designs/0003-source-reader-and-admission.md#12-非阻塞-reader)。
 
 M1 Memory Source 是 Runtime 参考实现、确定性测试设施、benchmark 输入和本地示例数据源，
 不是生产级队列。它使用动态有界缓冲并分离 Runtime-facing Source 与 producer-facing
 Controller；Controller 提供可取消的背压提交、正常结束和失败注入语义，Close 仍由
 Runtime 管理。正常结束 drain 已缓存记录，失败优先于尚未交接缓存；所有并发操作
 在同一生命周期状态机上线性化。完整定位、ownership、终态竞争和测试契约见
-[Core Execution Model §4.7](designs/0001-core-execution-model.md#47-m1-memory-source)。方法名和具体公开
+[Source Design §1.7](designs/0003-source-reader-and-admission.md#17-m1-memory-source)。方法名和具体公开
 Go API 仍留待实现阶段商议。
 
 Source 数据进入业务类型的边界固定为：Connector 读取外部原始数据，配置的
@@ -491,7 +505,7 @@ ownership；零输出不调用 Sink。Memory Sink 保留 work groups，提供组
 支持固定确定性失败计划，并在同一线性化边界上协调并发接管、快照与 Close。
 Close 同步、幂等且不清空结果；没有异步 completion、外部 in-flight、flush 或跨 work 回滚。
 详细契约与确定性并发测试要求见
-[Core Execution Model §7.1.1](designs/0001-core-execution-model.md#711-m1-同步-memory-sink)。参考方法名
+[Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink)。参考方法名
 不锁定最终公开 Go API。
 
 Chain 成功后的最终输出先保留在 Runtime 的有界末端边界。一个 work 的输出在责任上
@@ -673,6 +687,9 @@ Runtime 不提供 Skip/Discard record 动作，也不在 Transformation 上提�
 时间上无限等待，是否根据次数、持续时间、当前时段或其他业务信息终止，
 由用户的失败策略决定。但无论等待多久，保留的数据、goroutine、队列和其他
 运行资源都必须有界，并且 Runtime 必须始终响应宿主取消。
+
+完整错误、panic 与停止契约见
+[Failure Design](designs/0006-failure-panic-and-shutdown.md)。
 
 暂停后，已经被 Runtime 接受但尚未开始的记录保留原记录和 in-flight
 容量，不再分配给 Worker。已开始的 work 可继续完成当前 Chain 计算；对于
@@ -1192,7 +1209,7 @@ position gap 驱动额外 Operator drain，position tracker 只消费最终 comp
 可通过 `errors.Is/As` 识别的附加错误。若 yaspe 内部 panic 首先触发终止，Runtime 只做
 有界资源收尾且不再推进或提交 position；若 panic 发生在已有 FailJob 的收尾期间，则完整
 panic value 和 stack 作为高严重度附加错误保留，而不改写原始因果顺序。详细契约见
-[Core Execution Model §11](designs/0001-core-execution-model.md#11-failjob取消与关闭)。
+[Failure Design §2](designs/0006-failure-panic-and-shutdown.md#2-failjob取消与关闭)。
 
 优雅停止不能替代故障恢复，因为进程仍可能被强制终止。
 
@@ -1263,8 +1280,8 @@ notify completion / commit sinks
 
 | 对象/概念 | 创建者 | 主要所有者 | 生命周期 |
 |---|---|---|---|
-| JobBuilder | 用户 API | 调用方 | 可变定义期；不保证并发安全 |
-| Transformation | DSL/Builder | JobBuilder | 作业定义期；持有逻辑身份和引用关系 |
+| JobDraft / Stream / JobBuilder | 用户 API | 调用方 | 不可变派生的 type-state 定义期 |
+| Transformation | DSL/Builder | Job Definition API | 作业定义期；持有逻辑身份和引用关系 |
 | Job Definition | JobBuilder.Build | 调用方 | Build 时不可变快照，可独立于 Builder 使用 |
 | Logical Graph | Builder/Compiler | Job Definition | 作业定义与编译期 |
 | Execution Graph | Planner | Runtime 启动流程 | 一次编译/运行版本 |

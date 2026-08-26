@@ -45,7 +45,9 @@ Operator --Collector.Emit--> Downstream
 
 本决定固定职责和语义，不固定第一版 Go 接口。`Run(output)`、`Poll(output)` 或其他接口形式应在核心执行模型设计和原型中验证后决定。
 
-后续阶段设计已选择“外部阻塞 I/O 由 Connector 内部适配，Runtime 面向非阻塞 Reader”的分层模型，详见 [核心执行模型](../designs/0001-core-execution-model.md)。本 ADR 中“不固定接口”表示当时的职责决定不依赖具体调用形式，不表示该问题目前仍未决。
+后续阶段设计已选择“外部阻塞 I/O 由 Connector 内部适配，Runtime 面向非阻塞 Reader”的
+分层模型，详见 [Source Reader Design](../designs/0003-source-reader-and-admission.md)。本 ADR 中
+“不固定接口”表示当时的职责决定不依赖具体调用形式，不表示该问题目前仍未决。
 
 ## 原因
 

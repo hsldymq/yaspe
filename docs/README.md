@@ -7,7 +7,7 @@
 1. [Current Status](status.md)：恢复当前里程碑、实现状态、开放问题和唯一下一步；
 2. [Roadmap](roadmap.md) 当前里程碑：确认范围、非范围和完成标准；
 3. [Living Architecture](architecture.md) 相关章节：恢复跨阶段职责、边界和不变量；
-4. Status 指向的 [Design](designs/)：恢复当前能力的正式执行契约；
+4. 从 [Design Map](designs/design-map.md) 确认依赖关系，再读 Status 指向的权威 Design；
 5. 相关 [ADR](decisions/)：恢复重要决定的背景、取舍和重新评估条件；
 6. 当前代码、测试、`git status` 和最近提交：核对仓库现实。
 
@@ -27,7 +27,7 @@
 | 能力按什么顺序演进 | [Roadmap](roadmap.md) |
 | 系统长期由什么组成、职责如何划分 | [Living Architecture](architecture.md) |
 | 为什么作出一个长期取舍 | [ADR 与决策索引](decisions/README.md) |
-| 某项能力具体如何工作 | [Design](designs/) |
+| 某项能力具体如何工作、各 Design 如何依赖 | [Design Map](designs/design-map.md) |
 | 当前做到哪里、下一步是什么 | [Current Status](status.md) |
 | 实际已经实现并验证了什么 | 代码和自动化测试 |
 | 文档如何维护和接力 | [Documentation Governance](governance.md) |

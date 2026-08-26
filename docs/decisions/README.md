@@ -16,13 +16,13 @@
 | ID | 决策 | 状态 | 影响阶段 | 权威位置 |
 |---|---|---|---|---|
 | D-EXEC-001 | M1/M2 使用并行完整 Pipeline，单 work 内同步执行 Chain | Accepted | M1–M2 | [Core Design §3](../designs/0001-core-execution-model.md#3-近期执行形态) |
-| D-EXEC-002 | 每条 lane 创建独立 Operator 包装实例，用户函数值可以共享 | Accepted | M1+ | [Core Design §3.1](../designs/0001-core-execution-model.md#31-第一版线性-job-definition) |
-| D-JOB-001 | JobBuilder/Stream/Transformation 定义模型，Build 产生不可变快照 | Accepted | M1+ | [Core Design §3.1](../designs/0001-core-execution-model.md#31-第一版线性-job-definition) |
-| D-FAIL-001 | Runtime 不提供 Skip/DiscardRecord；业务错误由用户函数收敛为正常零输出 | Accepted | M1+ | [Core Design §10.1](../designs/0001-core-execution-model.md#101-错误不直接等于退出) |
-| D-SINK-001 | 一个 work 的 terminal output 向 Sink 整组原子交接 | Accepted | M2+ | [Core Design §7.1](../designs/0001-core-execution-model.md#71-整组责任转移) |
-| D-BUDGET-001 | Runtime 第一版公开 Parallelism 和 MaxInFlightWorks，内部队列保持有界 | Accepted | M1+ | [Core Design §8.3](../designs/0001-core-execution-model.md#83-第一版数量预算) |
-| D-REBALANCE-001 | revoke 暂停 Source 全部 admission，started/Sink-owned work有限收敛 | Accepted | M2 | [Core Design §12](../designs/0001-core-execution-model.md#12-kafka-rebalance) |
-| D-REBALANCE-002 | RevokeDrainTimeout 默认 30 秒且受 Connector 更早 deadline 限制 | Accepted | M2 | [Core Design §12](../designs/0001-core-execution-model.md#12-kafka-rebalance) |
+| D-EXEC-002 | 每条 lane 创建独立 Operator 包装实例，用户函数值可以共享 | Accepted | M1+ | [Job Design](../designs/0002-job-definition-and-runtime-instantiation.md) |
+| D-JOB-001 | type-state Job Definition 模型，Build 产生不可变快照 | Accepted | M1+ | [Job Design](../designs/0002-job-definition-and-runtime-instantiation.md) |
+| D-FAIL-001 | Runtime 不提供 Skip/DiscardRecord；业务错误由用户函数收敛为正常零输出 | Accepted | M1+ | [Failure Design §1.1](../designs/0006-failure-panic-and-shutdown.md#11-错误不直接等于退出) |
+| D-SINK-001 | 一个 work 的 terminal output 向 Sink 整组原子交接 | Accepted | M2+ | [Sink Design §1.1](../designs/0005-sink-handoff-and-completion.md#11-整组责任转移) |
+| D-BUDGET-001 | Runtime 第一版公开 Parallelism 和 MaxInFlightWorks，内部队列保持有界 | Accepted | M1+ | [Core Design §5.3](../designs/0001-core-execution-model.md#53-第一版数量预算) |
+| D-REBALANCE-001 | revoke 暂停 Source 全部 admission，started/Sink-owned work有限收敛 | Accepted | M2 | [Kafka Design §2](../designs/0007-position-and-kafka-rebalance.md#2-kafka-rebalance) |
+| D-REBALANCE-002 | RevokeDrainTimeout 默认 30 秒且受 Connector 更早 deadline 限制 | Accepted | M2 | [Kafka Design §2](../designs/0007-position-and-kafka-rebalance.md#2-kafka-rebalance) |
 
 ## 维护规则
 

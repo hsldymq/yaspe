@@ -650,6 +650,6 @@ Superseded   被新的里程碑或方案替代
 
 当前处于 M0。核心执行模型已经 Accepted，但影响 M1/M2 公共 API、ownership、并发和恢复
 正确性的开放问题仍需按 [Current Status](status.md) 和
-[Core Design §16](designs/0001-core-execution-model.md#16-当前开放问题) 依次收敛。
+[Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题) 依次收敛。
 
 当前唯一下一步由 Status 维护；Roadmap 不复制动态讨论队列。
