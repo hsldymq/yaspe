@@ -200,6 +200,13 @@ Deserializer 只产生 `T`。完成正式交接前，Connector 在自身有界�
 Envelope 和 Work。具体 Reader 接口与方法名留待 Source API 实现时确定。第一版
 `Record[T]` 仍只有 `Value T`，不增加通用 metadata 容器。
 
+M2 positioned Reader 的 ready 结果还携带 Connector 定义的不透明 split/position 信息；
+Runtime 根据当前 assignment 绑定 ownership，不能由 Reader 自行填写 generation。完整表示、
+有序交接、identity 和 safe position 契约见
+[Position Design §1](0007-position-and-kafka-rebalance.md#1-position-与第一版一致性保证)。M2
+第一版一个 positioned Source element 必须恰好产生一个 `T`，不得在 Connector 内静默过滤；
+Source 级零/多输出需要未来独立的 element-level completion 协议。
+
 普通 Map 把输入转换为新的输出类型时，只有被 transform 明确保留在输出值中的 Source
 metadata 才会继续到达下游。这是类型转换的显式语义，不由 Runtime 隐式复制。split、
 position、ownership generation、work identity、attempt、completion 和 permit 等正确性

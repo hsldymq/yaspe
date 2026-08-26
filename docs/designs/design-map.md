@@ -1,6 +1,6 @@
 # yaspe Design Map
 
-最后更新：2026-08-26
+最后更新：2026-08-27
 
 本文是近期 Design 的导航和依赖地图。它维护每个 Design 的权威范围、设计状态与阅读顺序，
 不复制完整契约，也不维护实现、验证、工作区或唯一下一步；这些动态事实由
@@ -16,7 +16,7 @@
 | [0004 Operator Attempt 与 Collector](0004-operator-attempt-and-collector.md) | Collector scope、Emit ownership、Chain、attempt 暂存 | Accepted | 0001、0002 |
 | [0005 Sink Handoff 与 Completion](0005-sink-handoff-and-completion.md) | 整组交接、Memory Sink、异步 completion、有限关闭 | Accepted / M2 details discussing | 0001、0004 |
 | [0006 Failure、Panic 与 Shutdown](0006-failure-panic-and-shutdown.md) | Failure Policy、FailJob、panic、错误因果、shutdown | Work Retry Accepted / Sink Retry & error API discussing | 0001、0005 |
-| [0007 Position、Ownership 与 Kafka Rebalance](0007-position-and-kafka-rebalance.md) | safe position、generation fence、Kafka rebalance | Accepted / M2 API discussing | 0001、0003、0005、ADR-0002 |
+| [0007 Position、Ownership 与 Kafka Rebalance](0007-position-and-kafka-rebalance.md) | split/position、Envelope identity、safe position、generation fence、Kafka rebalance | Accepted / client adapter discussing | 0001、0003、0005、ADR-0002 |
 | [0008 Runtime 验证与可观测性](0008-runtime-verification-and-observability.md) | 指标、确定性测试、race/leak、fault、benchmark、审核清单 | M1 Accepted / M2 Discussing | 全部近期执行契约 |
 
 `Accepted / details discussing` 表示该 Design 中已经接受的行为继续有效，但文件明确列出的

@@ -206,8 +206,6 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
 ### 2.2 M2 实现前必须收敛
 
 - Sink `NotApplied/Unknown` 的 Retry 资格，以及 active work failure collection 的最终公开错误 API；
-- Source split/position 的公共或内部表示，以及 Kafka committed offset 转换边界；
-- Runtime Envelope 中 split、position、generation、work、attempt 和 completion identity 的组织；
 - 非阻塞 Reader、availability notification、Source control event 和 Connector Open/Close 的最终接口；
 - Sink `Open/Accept/Close`、原子接管、reporter、capacity notification 和 callback slice ownership 的最终接口；
 - `SinkSucceeded`、`SinkNotApplied`、`SinkUnknown`、部分成功和迟到/重复 callback 的精确动作；

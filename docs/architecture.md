@@ -1,7 +1,7 @@
 # yaspe Living Architecture
 
 文档状态：Living Document  
-最后更新：2026-08-24
+最后更新：2026-08-27
 当前里程碑：M0 — 核心语义与项目基线  
 关联文档：[Vision](vision.md) · [Roadmap](roadmap.md) · [Current Status](status.md)
 
@@ -269,13 +269,15 @@ Map 改变值类型时，只有 transform 明确保留在输出类型中的这�
 ```text
 Runtime Envelope[T]
 ├── Record[T]
-├── Source Split Identity
-├── Source Position
-├── Ownership Generation
-└── Completion Identity / Runtime Metadata
+├── unpositioned | positioned(SplitID, Ownership, SourcePosition)
+├── WorkID / current attempt
+└── Completion state / Runtime metadata
 ```
 
-这只是概念模型。是否真的实现为一个 `Envelope[T]` struct、metadata 是否分层保存，留给 M2 设计决定。
+Envelope 是 Runtime 私有的 work scope，不进入用户 API，也不沿 Pipeline 复制。Completion
+直接属于 Work，不建立一对一的 Completion identity；是否真的实现为一个 `Envelope[T]`
+struct、metadata 如何分层保存仍属于私有实现选择。完整契约见
+[Position Design §1.3](designs/0007-position-and-kafka-rebalance.md#13-runtime-envelope-与-identity)。
 
 ### 7.3 Operator
 
@@ -1286,7 +1288,7 @@ notify completion / commit sinks
 | Operator instance | Planner/Runtime | Execution Task | Task 生命周期 |
 | Collector | Runtime/Execution Node | Runtime | 一次 Process 调用；物理复用属于实现细节 |
 | Record | Source/Operator | 当前处理边界 | 随数据流转移 |
-| Runtime Envelope | Source boundary | Runtime | 输入终结前 |
+| Runtime Envelope | Source boundary | Runtime | 输入终结前；私有 work scope，不沿 Pipeline 公开复制 |
 | Sink | Runtime/Factory | Runtime | Job/Task 生命周期 |
 | Completion state | Runtime | Completion Tracker | position 可安全推进前 |
 | Keyed State | State Backend | Runtime | checkpoint/retention 生命周期 |
@@ -1367,12 +1369,16 @@ State API      → specific backend implementation
 15. 性能优化不能改变公开语义，除非通过新设计明确修改。
 16. Runtime 与 Sink 的主动调度方向不是架构不变量，但完整 work 的责任交接、有界资源和 completion 事实不能因调度方式改变。
 
+Positioned split 内 Connector admission 顺序必须等于该 split 的恢复顺序；Runtime 按 admission
+顺序追踪 completion，但不解析 Connector position。Source position、completion safe frontier
+和未来 checkpoint cut 是不同状态；完整契约见
+[Position Design §1](designs/0007-position-and-kafka-rebalance.md#1-position-与第一版一致性保证)。
+
 ## 21. 当前开放问题
 
 以下问题尚未定稿，应在阶段设计或原型中解决：
 
 - Operator 是否长期保留为接口，还是以 function adapter 为主；
-- M2 的 Runtime Envelope 和 position 是否采用泛型、opaque token 或内部 adapter；
 - 稳定 Operator identity 从何时开始强制要求。
 
 这些问题出现在本文中不代表应当现在一次性解决。当前阶段只解决会影响当前代码的部分。

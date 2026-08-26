@@ -1,6 +1,6 @@
 # yaspe Current Status
 
-最后更新：2026-08-26
+最后更新：2026-08-27
 
 本文是动态交接快照，不是完整设计记录。完整契约见正式 Design，决定背景和取舍见
 [决策索引](decisions/README.md)，维护规则见 [Documentation Governance](governance.md)。
@@ -27,7 +27,7 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | 线性 Job Definition | Accepted | Not Started | Not Applicable | [Job Design](designs/0002-job-definition-and-runtime-instantiation.md) |
 | M1 Stateless Runtime | Accepted | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
 | M2 Operator work Retry | Accepted | Not Started | Not Applicable | [Failure Design §1](designs/0006-failure-panic-and-shutdown.md#1-失败暂停与恢复) |
-| M2 Position / Completion | Discussing | Not Started | Not Applicable | [Verification Design §2.2](designs/0008-runtime-verification-and-observability.md#22-m2-实现前必须收敛) |
+| M2 Position / Completion | Position/identity Accepted; completion Discussing | Not Started | Not Applicable | [Position Design](designs/0007-position-and-kafka-rebalance.md) |
 | 异步 Sink 协议 | Discussing | Not Started | Not Applicable | [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | Kafka Consumer Group / Rebalance | Accepted | Not Started | Not Applicable | [ADR-0002](decisions/0002-use-kafka-consumer-group-for-external-coordination.md) |
 | Kafka / ClickHouse Connector | Discussing | Not Started | Not Applicable | [Roadmap M2](roadmap.md#6-m2source-position完成跟踪与生产级-sink) |
@@ -125,6 +125,12 @@ tracker、Kafka 或 ClickHouse 实现。
   的新业务 admission，已接纳 work 继续收敛；所有 blocker 成功后恢复，有限预算耗尽只能
   FailJob。Runtime 为每个 active failed work 保留第一次 error，详见
   [Failure Design §1](designs/0006-failure-panic-and-shutdown.md#1-失败暂停与恢复)。
+- Positioned split 内 Connector 必须按恢复顺序交接 Source element；Runtime 不解析不透明
+  position，而按 admission 顺序追踪 Work completion，只把连续成功前缀末端交给 Connector
+  转换和提交。Envelope 是私有 work scope，Completion 直接由 `WorkID` 定位，不增加
+  `CompletionID`；Retry 更换 attempt identity，异步 Sink 输出使用 `SinkItemID`。M2 暂定一个
+  Source element 恰好产生一个 Record，未来 checkpoint 保存完整 split state 并成为恢复权威，
+  详见 [Position Design §1](designs/0007-position-and-kafka-rebalance.md#1-position-与第一版一致性保证)。
 
 能力契约与依赖见 [Design Map](designs/design-map.md)，长期取舍索引见
 [Decision Index](decisions/README.md)。
@@ -133,13 +139,12 @@ tracker、Kafka 或 ClickHouse 实现。
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
 
-1. M2 Source split/position 与 Runtime Envelope 的表示和 identity 组织；
-2. M2 异步 Sink/completion 及 Sink effect Retry；
-3. Kafka/ClickHouse Connector、M2 指标、故障注入和交付保证审核。
+1. M2 异步 Sink/completion 及 Sink effect Retry；
+2. Kafka/ClickHouse Connector、M2 指标、故障注入和交付保证审核。
 
 ## 当前唯一下一步
 
-讨论并接受 M2 Source split/position 与 Runtime Envelope 的表示和 identity 组织。
+讨论并接受 M2 异步 Sink completion 的结果分类与 Sink effect Retry 资格。
 
 ## 最近验证
 
@@ -147,12 +152,3 @@ tracker、Kafka 或 ClickHouse 实现。
 - `git diff --check`：通过；
 - Markdown 相对链接目标检查：通过；
 - Runtime/fault/race benchmark：尚不适用或尚未运行。
-
-## 工作区交接说明
-
-- 当前存在未提交的 Design Map、按能力拆分的权威 Design、Architecture/Status/Roadmap/ADR/
-  Decision Index 链接迁移，以及 Job Definition 契约更新；
-- `Emit(record)` 代码与 Operator 测试已在当前 HEAD，不属于本次未提交 diff；
-- 尚未开始 M1/M2 Runtime 或 Connector 编码；
-- 新会话必须先检查实际 `git status` 和 diff，不能仅依赖本节；
-- 当前本地工具链：`go1.27.0-X:nodwarf5 linux/amd64`；`go.mod` 要求 Go 1.27。
