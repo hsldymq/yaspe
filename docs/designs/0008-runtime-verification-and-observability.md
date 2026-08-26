@@ -1,6 +1,6 @@
 # 0008：Runtime 验证与可观测性
 
-状态：Discussing
+状态：M1 Accepted / M2 Discussing
 最后更新：2026-08-26
 适用阶段：M1–M2
 依赖：全部近期执行契约；见 [Design Map](design-map.md)
@@ -76,6 +76,99 @@
 - Runtime 可用 Memory Reader/Sink 和可控时钟测试；
 - 慢 Sink、结果未知、重复 callback、取消和 rebalance 可以确定性注入。
 
+### 1.6 M1 指标记录能力
+
+M1 先建立指标记录能力，但不在 Runtime 与 M2 尚未实现时预先冻结完整指标集合或公开 Metrics
+API。完整指标名称、标签和 adapter 在 M1、M2 具备真实实现经验后统一审核；当前只固定以下语义：
+
+- M1 唯一必需指标是成功完成的 work 累计数，外部观察者通过相邻采样点的增量和时间差计算
+  单位时间吞吐量；Runtime 不维护 QPS、滑动窗口或采样周期；
+- 计数发生在 work 成功终态完成线性化之后，并且同一 work 最多增加一次；正常零输出同样计数，
+  失败、取消、未完成和 unknown 不计数；M2 引入 Retry 后，多个 attempt 仍只能形成一次 work
+  完成计数；
+- 记录点由 Runtime 根据 completion 事实触发，Source、Operator 和 Sink 不自行推断 work 是否
+  完成；
+- recorder/observer 由 Runtime option 注入，未配置时使用 no-op；记录调用必须并发安全、快速、
+  不阻塞，不在执行路径中进行网络 I/O；
+- 指标记录失败不得改变 Job 结果、触发 FailJob 或掩盖原始错误。M1 可以先使用私有 recorder
+  隔离内部调用；公开类型名、instrument 形态和 Prometheus 等 adapter 不在本阶段定稿。
+
+### 1.7 确定性并发测试与 goroutine 回收
+
+并发正确性测试采用由外到内的可控边界，不把概率碰撞当作正确性证据：
+
+1. 优先用 fake Source、Sink 和 Operator 在真实组件调用边界暂停、返回或完成操作；
+2. 用 channel/future、barrier、可控 clock 或可手动推进的 executor 精确安排异步顺序；
+3. 只有组件边界无法观察的 Runtime 内部线性化窗口才设置私有 test hook；hook 只负责观测和
+   暂停，不修改 Runtime 状态，也不进入公开 API；
+4. 关键竞态测试不使用 `time.Sleep` 猜测调度时序；所有等待必须有测试超时，并在失败时暴露
+   所处阶段；随机或重复压力测试只作补充，不能替代已枚举交错的确定性测试。
+
+`go test -race ./...` 必须覆盖正常执行、失败、取消、Source/Sink 并发与关闭路径，确定性竞态
+测试本身也必须能在 race detector 下运行。Runtime 创建的每个 goroutine 都必须进入内部
+execution group 或等价的结构化追踪机制，`Run` 返回前等待这些 goroutine 退出；实现不能只靠
+测试前后比较整个进程的 goroutine 总数证明无泄漏。测试同时使用 goroutine leak detector 或
+等价检查兜底，覆盖正常结束、Operator 失败、Sink 失败、外部取消、shutdown deadline 和
+Source 等待通知时取消。外部客户端无法阻止的迟到 callback 按 Failure Design 的 fence 与状态
+解耦规则处理，不计作仍由 Runtime 持有的 goroutine。
+
+### 1.8 M1 benchmark
+
+M1 benchmark 使用 Go 标准 `testing.B` 格式作为原始事实来源，通过 `ReportMetric` 补充 yaspe
+的 work 级测量，并使用 `benchstat` 进行多轮统计比较；不建设独立报告格式或自制统计系统。
+
+#### 1.8.1 Workload
+
+第一版固定三类最小 workload：
+
+1. Runtime overhead：`Memory Source -> identity Operator -> consuming Memory Sink`，每个小 Record
+   产生一个输出，测量 admission、队列、类型擦除、Operator 调用、Sink 交接、completion 和
+   必需 work-completed 记录路径的综合成本；Sink 必须实际消费结果，但 benchmark 不因永久保存
+   全部输出而退化为内存增长测试；
+2. CPU-bound：每个 work 执行固定、可重复且无外部依赖的纯计算，校验最终结果以防编译器消除，
+   用于观察不同 Parallelism 的吞吐和扩展效率；
+3. blocking-I/O simulation：每个 work 使用真实墙钟 `time.Sleep` 模拟明确标注的固定等待，
+   用于观察并发隐藏等待、timer/scheduler 成本和 `MaxInFlightWorks` 的影响。它不代表具体生产
+   Connector 的绝对性能。
+
+`testing/synctest` 用于 timeout、deadline、backoff 和异步稳定状态等确定性正确性测试，不用于
+声称真实 I/O 等待下的性能；虚拟时间测试可验证容量和行为，但其结果不得作为墙钟吞吐数据。
+
+默认配置矩阵只覆盖 `Parallelism = 1 / GOMAXPROCS / 2*GOMAXPROCS` 与
+`MaxInFlightWorks = Parallelism / 2*Parallelism / 8*Parallelism`。Runtime overhead 另测零输出
+和固定有限多输出；较大 Record 作为独立诊断项，不与所有配置形成完整笛卡尔积。真实实现或
+profiler 发现问题后再增加有解释价值的针对性 benchmark。
+
+#### 1.8.2 测量与正确性
+
+- benchmark 使用 `testing.B.Loop`，将一次性输入构造和 Job setup 排除在被测区间外；完整 Run
+  benchmark 必须包含 Open、执行和 Close，若另设 steady-state benchmark，名称与报告必须明确
+  它排除了哪些生命周期成本；
+- 每轮处理固定批次 work，并按成功完成总数报告 `works/s`、`ns/work`、`B/work` 和
+  `allocs/work`；Go 默认的 `B/op`、`allocs/op` 若以 batch 为一次 op，不得冒充 work 级结果；
+- 延迟使用独立 benchmark，在 Runtime 接管 work 与成功终态线性化之间采样，预分配固定比例的
+  采样存储，并报告 p50、p95 和 p99；采样机制及其开销必须在报告中说明；
+- 另行报告或验证 startup/close 成本、实际 `peak-inflight` 和 CPU workload 相对
+  `Parallelism=1` 的扩展效率；
+- 每个 benchmark 都校验 work 完成数、Sink 接收数、预期输出数和关键资源上限。必需指标记录、
+  completion 与 ownership 路径不得为提高成绩而关闭；
+- 失败、取消和 shutdown 只进入独立收尾 benchmark，测量从停止触发到 `Run` 返回的耗时与未完成
+  work，不与正常路径的 `works/s` 横向比较。
+
+#### 1.8.3 可重复性与结果解释
+
+- benchmark 子名称编码 workload、Parallelism、MaxInFlightWorks、输出数量等关键配置；原始结果
+  同时记录 commit、Go 版本、OS、架构、CPU 和 GOMAXPROCS；
+- 正式 old/new 比较在同一机器和相同软件、资源配置下至少运行多轮，并以 `benchstat` 的统计结果
+  为准；单次运行差异不构成性能结论；
+- 共享 CI 只检查 benchmark 可运行和断言成立，不因小幅噪声直接判定回归。自动性能门槛仅在稳定
+  专用环境和积累足够基线后设置，M1 不预设统一百分比；
+- 结果必须联合解释吞吐、延迟、分配和 peak in-flight。吞吐提升若依赖更多内存、更高资源上限、
+  丢弃输出、跳过 completion 或削弱语义，不得称为有效优化；
+- benchmark 不能替代确定性正确性、race 或 leak 测试。仓库长期保存 benchmark 代码；只有里程碑
+  基线、重要优化对比或影响架构决定的结果才形成独立性能报告并由 Status 链接，不记录每次运行
+  流水。
+
 ## 2. 当前开放问题
 
 当前 M0 的退出目标是先收敛所有影响 M1/M2 公共 API、所有权、并发和恢复正确性的设计，
@@ -84,7 +177,8 @@
 
 ### 2.1 M1 实现前必须收敛
 
-- M1 指标、确定性测试、race/leak 测试和 benchmark 的实现前审核。
+- 无剩余设计问题；M1 指标记录、确定性测试、race/leak 和 benchmark 审核已经接受。具体私有
+  类型与测试 package 组织可在实现中按 §2.3 细化。
 
 ### 2.2 M2 实现前必须收敛
 
@@ -118,4 +212,3 @@
 - 旧 generation 的所有迟到路径是否被 fence；
 - Kafka session 是否独立于业务回压继续维持；
 - 宿主取消是否能有界结束所有 Runtime 管理的 goroutine。
-

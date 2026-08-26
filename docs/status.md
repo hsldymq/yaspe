@@ -25,7 +25,7 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | M1 Reader / Memory Source 语义 | Accepted | Not Started | Not Applicable | [Source Design](designs/0003-source-reader-and-admission.md) |
 | M1 同步 Memory Sink 语义 | Accepted | Not Started | Not Applicable | [Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink) |
 | 线性 Job Definition | Accepted | Not Started | Not Applicable | [Job Design](designs/0002-job-definition-and-runtime-instantiation.md) |
-| M1 Stateless Runtime | Discussing | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
+| M1 Stateless Runtime | Accepted | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
 | M2 Position / Completion | Discussing | Not Started | Not Applicable | [Verification Design §2.2](designs/0008-runtime-verification-and-observability.md#22-m2-实现前必须收敛) |
 | 异步 Sink 协议 | Discussing | Not Started | Not Applicable | [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | Kafka Consumer Group / Rebalance | Accepted | Not Started | Not Applicable | [ADR-0002](decisions/0002-use-kafka-consumer-group-for-external-coordination.md) |
@@ -107,6 +107,18 @@ tracker、Kafka 或 ClickHouse 实现。
   每条 lane 一套 Operator Chain 和一个共享 Sink。Operator 可选实现独立生命周期接口，组件
   按 Sink、Operator、Source 顺序 Open 并逆序清理；私有 typed adapter 承担异构类型擦除，
   详见 [Job Design](designs/0002-job-definition-and-runtime-instantiation.md)。
+- M1 先只记录成功完成的 work 累计数，由外部按采样增量计算吞吐量；记录发生在成功终态
+  线性化之后且每个 work 至多一次，零输出计数，失败、取消和 unknown 不计数。Runtime option
+  注入快速、并发安全、非阻塞的 recorder，默认 no-op，完整公开 Metrics API 延后到 M1/M2
+  实现后审核，详见 [Verification Design §1.6](designs/0008-runtime-verification-and-observability.md#16-m1-指标记录能力)。
+- M1 并发测试优先使用可控 fake、barrier、clock/executor，只为外部边界无法观察的 Runtime
+  内部窗口保留私有 hook；关键测试不依赖 `time.Sleep`。Runtime goroutine 使用结构化 execution
+  group 追踪并在 `Run` 返回前回收，再以 race detector 和 leak detector 兜底，详见
+  [Verification Design §1.7](designs/0008-runtime-verification-and-observability.md#17-确定性并发测试与-goroutine-回收)。
+- M1 benchmark 使用 Runtime overhead、CPU-bound 和真实墙钟 blocking-I/O simulation 三类
+  最小 workload；标准 `testing.B` 输出与 `ReportMetric` 是原始事实，`benchstat` 负责多轮比较。
+  结果联合解释 work 级吞吐、延迟、分配和 peak in-flight，不允许通过扩大资源或削弱语义制造
+  提升，详见 [Verification Design §1.8](designs/0008-runtime-verification-and-observability.md#18-m1-benchmark)。
 
 能力契约与依赖见 [Design Map](designs/design-map.md)，长期取舍索引见
 [Decision Index](decisions/README.md)。
@@ -115,13 +127,13 @@ tracker、Kafka 或 ClickHouse 实现。
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
 
-1. M1 指标、确定性测试、race/leak 测试和 benchmark 审核；
-2. M2 Retry、position/Envelope、异步 Sink/completion；
+1. M2 Retry 的适用错误、预算、backoff/jitter、耗尽动作和 Job 级恢复范围；
+2. M2 position/Envelope、异步 Sink/completion；
 3. Kafka/ClickHouse Connector、M2 指标、故障注入和交付保证审核。
 
 ## 当前唯一下一步
 
-讨论并接受 M1 指标、确定性测试、race/leak 测试和 benchmark 的实现前审核。
+讨论并接受 M2 Retry 的适用错误、预算、backoff/jitter、耗尽动作和 Job 级恢复范围。
 
 ## 最近验证
 
