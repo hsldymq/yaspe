@@ -169,6 +169,29 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
   基线、重要优化对比或影响架构决定的结果才形成独立性能报告并由 Status 链接，不记录每次运行
   流水。
 
+### 1.9 M2 Operator Retry 验证
+
+- attempt 测试证明任一 Operator error 或 `PanicError` 都丢弃该 attempt 的全部暂存输出，新
+  attempt 从原始输入重跑完整 Chain，work identity 不变、attempt identity 更新，同一 work 不
+  出现重叠 attempt；
+- 输入 ownership 测试覆盖 Runtime 跨 backoff 保留输入以及内置 Operator 不原地修改；测试只
+  能验证内置行为和公开契约，不宣称能检测任意用户代码对可达引用数据的违规修改；
+- 用 barrier 把 Source admission 分别暂停在 Failure Policy 判定前、active failure 登记前后、
+  lane 释放前后和并发 Read 线性化两侧，证明 fence 安装后没有新业务 admission，已越过边界的
+  work 仍继续收敛；
+- 多 blocker 测试覆盖同时成功、再次失败、最后移除与新登记竞争，证明 gate 只在 active set
+  稳定为空时恢复且通知不丢失；
+- finite 次数、时间、组合预算和 explicit unlimited 都使用可控 clock 验证；时间 deadline 在
+  running attempt 中到达时必须取消 attempt context、禁止新 attempt，并等待协作返回；
+- fixed/exponential backoff 覆盖首次 delay、倍增、Max clamp、jitter 边界、确定随机序列、budget
+  deadline 截断、宿主取消和 shutdown；正确性测试优先使用 `testing/synctest`，不等待真实墙钟；
+- backoff 不占 execution lane 但持续占 permit；多个 retry work 可以并发但受 Parallelism 限制，
+  timer/goroutine/ready state 不随 attempt 次数无界增长；
+- first-failure set 测试覆盖单 work 多 attempt 不替换根因、多 work 有界聚合、恢复后移除以及
+  耗尽时 primary trigger 与 active failure snapshot 分离；
+- Build table test 覆盖 finite/unlimited 冲突、零或负预算和非法 backoff/jitter，默认未配置
+  Retry 时仍直接 FailJob。
+
 ## 2. 当前开放问题
 
 当前 M0 的退出目标是先收敛所有影响 M1/M2 公共 API、所有权、并发和恢复正确性的设计，
@@ -182,7 +205,7 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
 
 ### 2.2 M2 实现前必须收敛
 
-- Retry 的适用错误、backoff/jitter、次数或持续时间、耗尽动作和 Job 级恢复范围；
+- Sink `NotApplied/Unknown` 的 Retry 资格，以及 active work failure collection 的最终公开错误 API；
 - Source split/position 的公共或内部表示，以及 Kafka committed offset 转换边界；
 - Runtime Envelope 中 split、position、generation、work、attempt 和 completion identity 的组织；
 - 非阻塞 Reader、availability notification、Source control event 和 Connector Open/Close 的最终接口；

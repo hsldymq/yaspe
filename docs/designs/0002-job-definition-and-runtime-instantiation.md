@@ -19,6 +19,7 @@ From / FromFunc → Stream[T]
 Map / Filter / FlatMap → Stream[O]
 Transform / TransformFunc → Stream[O]
 SinkTo / SinkToFunc → JobBuilder
+Retry（可选）→ JobBuilder
 Build → Job
 ```
 
@@ -41,8 +42,9 @@ err = runtime.Run(ctx, job)
 `JobDraft` 只保存尚未绑定 Source 的 Job 级定义，只提供 `From`、`FromFunc` 和将来确有需求的
 Job 级不可变配置；它不提供 Build、Operator 或 Sink 方法。`Stream[T]` 是当前
 Transformation 的类型安全句柄，提供内置 Transformation、自定义 `Transform` 以及
-`SinkTo`。`SinkTo` 返回 `JobBuilder`，其方法集合不再包含任何流转换，只允许完整 Job 配置
-与 `Build`。
+`SinkTo`。`SinkTo` 返回 `JobBuilder`，其方法集合不再包含任何流转换，只允许 Retry 等完整
+Job 配置与 `Build`。M2 Retry 只在该阶段设置；`JobDraft` 和 `Stream[T]` 不重复提供，避免
+同一语义在不同 type-state 阶段产生覆盖或合并歧义。
 
 因此以下结构错误由编译器排除：
 
@@ -168,6 +170,7 @@ M1 Build 接受 Source 直接连接 Sink，也就是零个 Operator。它必须�
 - 空或全空白 Job 名称；
 - `JobDraft`、`Stream` 或 `JobBuilder` 的非法零值；
 - nil Source、Operator、Sink Factory 或 nil Func；
+- finite/unlimited Retry 模式冲突、无有效有限预算或非法 backoff/jitter 参数；
 - 缺失、重复、悬空或顺序损坏的节点；
 - 不能形成唯一 Source、线性 Chain 和唯一 Sink 的结构；
 - yaspe 私有 adapter 的类型元信息自相矛盾。
@@ -218,4 +221,5 @@ err := runtime.Run(ctx, job)
 ```
 
 Runtime options 持有 Parallelism、shutdown timeout、metrics、clock 等运行策略；这些状态不
-写回 Job Definition。
+写回 Job Definition。Retry/FailJob 属于 Job 的失败与副作用语义，由不可变 Job Definition
+持有，不是 Runtime 资源 option；同一 Job 被不同 Runtime 执行时默认保持相同失败语义。

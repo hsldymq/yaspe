@@ -1,6 +1,6 @@
 # 0006：Failure、Panic 与 Shutdown
 
-状态：Accepted（M1 FailJob 条款已定；M2 Retry 细节仍待收敛）
+状态：Accepted（M1 FailJob 与 M2 Operator work Retry 已定；Sink effect Retry 与错误公开 API 待定）
 最后更新：2026-08-26
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Sink Handoff](0005-sink-handoff-and-completion.md)
@@ -11,7 +11,9 @@
 
 ### 1.1 错误不直接等于退出
 
-用户失败策略可以根据错误、阶段、历史尝试、当前时段和业务信息决定等待、重试或最终 FailJob。
+Job 在 `JobBuilder` 阶段统一选择 Operator work 使用 FailJob 或 Retry。M2 不提供按 error 类型
+分类的用户函数，也不提供自定义 BackoffFunc；这些扩展只有在后续真实需求证明内置策略不足时
+才重新讨论。未配置 Retry 的默认行为仍是 FailJob，升级 Runtime 不得使既有 Job 自动重复执行。
 
 Runtime 不提供 Skip/Discard record 终态，也不在每个 Transformation 上提供 `OnError`。
 用户函数负责在业务逻辑附近识别可忽略的业务错误，并把它收敛为正常计算结果：Filter 可以
@@ -25,22 +27,105 @@ Operator 表达。只有未被用户吸收的 error 才进入 Job 级 Retry/Fail
 
 重试可以在时间上持续，但数据、goroutine、队列、timer 和并发请求始终有界，并且 Runtime 始终响应宿主取消。
 
-### 1.2 暂停
+### 1.2 Retry admission fence
 
-一条记录触发暂停后：
+任意 work 的 Failure Policy 决定 Retry 时，Runtime 立即暂停整个 Source 的新业务 admission，
+而不是按 split、partition 或 position 选择性暂停。Retry 是 Runtime work 失败语义，不能假设
+Source 提供 position，也不能要求 Source driver 在读取前知道下一条记录属于哪个 partition。
 
-- Source 不再向 Runtime 交接新记录；
-- Connector 不扩大业务预取；
-- Kafka session/control 仍继续；
-- 已接受但尚未开始的 work 保留输入和 permit，不分配给 Worker；
-- 已开始的 Chain 可以继续收敛到 terminal boundary；
-- 同一 split 中位于未解决失败之后的新 Sink effect 暂缓；
-- 位于失败之前、能够填补连续空洞的 work 可以继续进入 Sink；
-- 不同 split 按各自连续完成进度判断；
-- 已被 Sink 接受的操作不撤回，继续等待明确结果；
-- 暂停不冻结 completion、safe position 计算和安全提交。
+暂停只关闭新业务输入：
 
-同一暂停期间的多个失败进入一次 Job 级恢复过程，但每条失败保留独立错误、记录上下文和恢复状态。统一协调重试并发、共享依赖探测、日志和报警。
+- Runtime 不再调用 Reader 获取新业务记录，Connector 不扩大业务预取；
+- Kafka 等 Connector 仍维持 poll、heartbeat、session 和 control event 等外部协议活动；
+- 已经越过 admission 线性化点的所有 work 继续竞争 execution lane、完成 Chain 并尽量交给
+  Sink，不因另一个 work Retry 而取消；
+- retry work 在 backoff 期间不占 execution lane，但保留原 work、输入、completion responsibility
+  和 permit；空闲 lane 不从 Source 补入新 work；
+- 不同 retry work 可以在 Parallelism 限制内并发执行，同一 work 任意时刻最多一个 active attempt；
+- 所有 active retry blocker 都成功消失后，Runtime 才原子恢复 Source admission；有限 Retry
+  耗尽触发 FailJob，无限 Retry 可以使 Source admission 无限期暂停，直到成功或外部取消。
+
+Failure Policy 判定 Retry 后，必须先登记 active failure、把 blocker 从零变为一并安装 admission
+fence，之后才能释放 lane 或安排 backoff。已经跨过 admission 线性化点的并发读取属于已接纳 work；
+尚未跨过的读取必须被 fence 阻止。恢复时，active failure set 更新与 gate 状态属于同一个 Runtime
+协调状态机；最后一个 blocker 成功与另一个 blocker 失败并发时，不得短暂错误打开 gate，也不得
+丢失恢复通知。
+
+该策略把问题影响限制在失败发生时已经接纳的有限 work 内，避免 backoff 期间持续扩大 commit gap、
+潜在重复写入窗口和 completion tracking 范围；代价是任意 work Retry 都会暂停该 Run 的全部新业务
+输入，即使 Source 内部包含多个互相独立的 split。
+
+### 1.3 Operator work attempt Retry
+
+Operator 返回 error 或用户 `Process`/回调 panic 包装成 `PanicError` 后，统一遵守 Job 的
+Retry/FailJob 配置。context 取消与 shutdown 不 Retry；yaspe 内部 panic 强制 FailJob；Source
+读取错误没有对应 work，不进入 work Retry。Sink effect 是否可 Retry 取决于后续
+`SinkNotApplied`/`SinkUnknown` 契约，不由本节预先决定。
+
+Retry 的最小恢复单位是整个 work attempt：
+
+- 任一 Operator 失败后，丢弃当前 attempt 的全部暂存输出，不向 Sink 交接部分结果；
+- 新 attempt 使用新的 attempt identity，从原始输入 Record 重新执行完整 Operator Chain；work
+  identity、Source position 和 generation 保持不变；
+- retry attempt 可以由任意 execution lane 执行，不保证 lane affinity，也不保证回到同一个
+  Operator 包装实例；backoff 到期后它与已接纳 work 公平竞争 lane；
+- 原始输入及其可达引用数据由 Runtime 保留到 work 终结。Runtime 不复制任意泛型输入；用户
+  Operator 必须把输入视为只读，原地修改导致后续 attempt 输入变化时，结果不受保证；
+- attempt 之间的次数和 elapsed time 连续累计，成功或最终失败时才销毁该 work 的 retry 状态。
+
+M2 不自动重新 Open Source/Sink 或重启整个 Job。work Retry 耗尽后当前 Run FailJob 并返回 error；
+是否创建新 Runtime 再次运行 Job 由宿主决定。
+
+### 1.4 Retry budget 与 backoff
+
+Retry budget 支持两种明确模式：
+
+- finite：至少配置正数 `MaxRetries` 或正数 `MaxElapsedTime`，也可以同时配置，两者任一先耗尽
+  即停止；`MaxRetries` 不包含首次 attempt；
+- unlimited：显式无限 Retry，不与次数或时间上限混用，也不通过零值暗示无限。
+
+有限预算耗尽后唯一动作是 FailJob。正常 Stop、跳过 work 和 Dead Letter 都会引入 M2 未提供的
+终态或业务输出能力，因此不作为 exhaustion 配置。`MaxElapsedTime` 从首次 attempt 开始累计，
+包含 attempt 执行与 backoff；deadline 到期时取消当前 attempt context、禁止启动新 attempt，
+等待用户代码协作返回后 FailJob。Runtime 无法安全强杀忽略 context 的用户 goroutine，也不得在
+它仍访问 Collector/Record 时假装 attempt 已终结。
+
+M2 内置 no-backoff、fixed 和 exponential 三种策略，不提供用户 BackoffFunc。指数退避第 `n`
+次 Retry 的 nominal delay 为：
+
+```text
+min(Initial * Multiplier^(n-1), Max)
+```
+
+比例 jitter `j` 的范围是 `[0, 1]`，实际 delay 为：
+
+```text
+clamp(nominal * (1 + uniform(-j, j)), 0, Max)
+```
+
+第一次 Retry 同样等待 `Initial`；backoff 从上一次 attempt 返回后开始。Runtime 使用自身可取消
+clock/timer 和可注入随机源，测试使用确定序列。如果 retry deadline 早于计算结果，则只等待到
+deadline 并耗尽，不再启动 attempt。具体 timer heap/queue 属于私有实现，但 timer、goroutine 和
+调度状态必须有界。
+
+`Build` 必须拒绝 finite 无有效上限、非正预算、unlimited 与有限预算混用、负 fixed delay、
+非法 Initial/Multiplier/Max/Jitter 等配置；公开类型名和构造函数可由实现细化，不得改变上述语义。
+
+### 1.5 多 work failure collection
+
+第一个 work 进入 Retry 后，已接纳的其他 work 仍可能失败。Runtime 为每个 active failed work
+保存一条 first-failure entry；同一 work 后续 attempt 不替换第一次 error，只更新 attempts、
+last error 和 elapsed 等有界摘要。entry 数量受 `MaxInFlightWorks` 限制。
+
+work Retry 成功后从 active set 移除，并可通过日志/observer 发布恢复事实；Runtime 不永久保存
+整个 Run 中所有已恢复错误。任一 work 耗尽触发 FailJob 时，对 active set 生成不可变快照，区分：
+
+- primary trigger：真正耗尽并使 Job 此刻停止的 work 及其第一次 error；
+- failure collection：当时所有仍在 Retry 的 work 及其第一次 error 和摘要。
+
+单个 work 无论经历多少 attempt，其第一次 error 始终是该 work 的根因。多错误集合最终采用
+`Unwrap() []error`、primary 加查询接口或其他公开形态尚未决定，但内部从第一版开始保留这些
+信息，不能等 API 定稿后再丢失地补建。
 
 ## 2. FailJob、取消与关闭
 
@@ -87,8 +172,9 @@ ownership 收尾协议，不改变普通 FailJob 规则。
 ### 2.2 panic 边界与分类
 
 Runtime 只在它主动调用用户代码的最外层受控入口设置窄 recover boundary。M1 至少
-包括 Operator factory、`Operator.Process` 和 Failure Policy；内置 Operator 在 `Process` 内调用的
-transform/predicate 由外层 `Process` 边界覆盖，不重复嵌套 recover。
+包括 Operator factory 和 `Operator.Process`；内置 Operator 在 `Process` 内调用的
+transform/predicate 由外层 `Process` 边界覆盖，不重复嵌套 recover。M2 Failure Policy 只由
+内置值策略构成，不调用 error classifier 或 BackoffFunc 等用户回调。
 
 `Operator.Process` 及其用户回调 panic 时：
 
@@ -96,8 +182,8 @@ transform/predicate 由外层 `Process` 边界覆盖，不重复嵌套 recover�
 - `PanicError` 只描述失败事实，与其他未被吸收的 error 一样进入 Job 级 Failure Policy，
   由策略选择 Retry 或 FailJob；
 - 每次 panic 的 value 与 stack 都保留为该 attempt 的诊断；
-- Operator factory panic 发生在可执行实例建立前，作为启动失败直接返回；Failure Policy 自身
-  panic 不能再递归询问同一策略，直接触发 FailJob；
+- Operator factory panic 发生在可执行实例建立前，作为启动失败直接返回；内置 Failure Policy
+  若 panic 属于 yaspe 内部缺陷，按 `InternalPanicError` 强制 FailJob；
 - 用户代码 panic 不穿透 Runtime 并终止嵌入 yaspe 的宿主进程。
 
 yaspe 内部 panic 表示本不应发生的引擎缺陷。Runtime 监督边界可 recover 以便诊断和
@@ -129,4 +215,3 @@ Runtime 必须保证自身可控的等待都响应取消并回收。若用户代
 shutdown deadline 防止 `Run` 永久卡住；此时允许仍无法强制终止的 goroutine 存活，但必须
 返回 `ShutdownTimeoutError`、报告泄漏位置并用终态 fence 隔离其迟到动作。实现和测试不得
 把这种结果报告为正常、完整回收。
-

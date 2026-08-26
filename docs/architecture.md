@@ -682,32 +682,27 @@ Runtime 不提供 Skip/Discard record 动作，也不在 Transformation 上提�
 
 重试不意味着回滚。只要此前已有 Emit 或外部副作用，就可能产生重复。策略必须了解失败阶段和下游能力。
 
-当策略选择重试时，近期方向是优先暂停引入新数据，把恢复范围限制在
-当前失败和已经受控进入的在途数据，避免持续扩大问题范围。重试可以在
-时间上无限等待，是否根据次数、持续时间、当前时段或其他业务信息终止，
-由用户的失败策略决定。但无论等待多久，保留的数据、goroutine、队列和其他
+当 Job 策略选择 Retry 时，Runtime 先原子暂停整个 Source 的新业务 admission，把恢复范围
+限制在当前失败和已经受控进入的在途数据，避免持续扩大问题范围。暂停不按 split、partition
+或 position 选择，因为 work Retry 不能假设 Source 提供这些概念。Retry 可以配置有限次数、
+有限持续时间、两者组合或显式无限；无论等待多久，保留的数据、goroutine、timer、队列和其他
 运行资源都必须有界，并且 Runtime 必须始终响应宿主取消。
 
 完整错误、panic 与停止契约见
 [Failure Design](designs/0006-failure-panic-and-shutdown.md)。
 
-暂停后，已经被 Runtime 接受但尚未开始的记录保留原记录和 in-flight
-容量，不再分配给 Worker。已开始的 work 可继续完成当前 Chain 计算；对于
-同一 split 中位于未解决失败之后的记录，其新的 Sink effect 在末端边界等待，
-避免在已知无法推进 safe position 时制造可以避免的重复。位于失败之前、
-能够填补连续完成缺口的记录可继续进入 Sink；不同 split 按各自的连续进度判断。
-已被 Sink 接受的操作不撤回，继续等待明确结果。
+暂停后，已经被 Runtime 接受的记录继续竞争 execution lane、完成 Chain 并尽量进入 Sink；
+Runtime 只是不再用新 Source record 填补空闲 lane。retry work 在 backoff 中保留输入、permit 和
+completion responsibility，但不占 lane；不同 retry work 可在 Parallelism 限制内并发执行。
+所有 retry blocker 成功消失后才恢复 Source admission，有限预算耗尽则 FailJob。
 
 暂停不冻结已完成进度。Runtime 继续处理 Sink completion、计算每个 split 的
 连续 safe position，并在 ownership 仍有效时尽快持久化前进的安全位置。
 
-同一暂停期间继续出现的失败纳入一次 Job 级恢复过程，而不由每条记录
-创建不受协调的后台重试循环。每个失败仍保留独立的错误、记录上下文和
-恢复状态；统一协调负责限制重试并发、避免对同一故障依赖形成惊群，并只在
-所有阻塞项都进入允许继续的状态后恢复新数据。观察和报警可保留单条失败
-细节，但应允许限频和按故障过程聚合。
-
-具体失败动作集合、每条失败的等待节奏以及更细的恢复范围仍属于阶段设计问题，
+同一暂停期间继续出现的失败进入统一的 active failure set，而不由每条记录创建不受协调的
+后台重试循环。每个 active failed work 保留第一次错误和有界 attempt 摘要；恢复成功后移除，
+任一 work 耗尽时以触发项为 primary，并快照当时仍活跃的 failure collection。公开错误集合
+形态以及 Sink effect Retry 仍属于后续阶段问题，
 不在本文预先固定为具体类型或接口。
 
 ## 8. Reliability Plane

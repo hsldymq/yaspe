@@ -26,6 +26,7 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | M1 同步 Memory Sink 语义 | Accepted | Not Started | Not Applicable | [Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink) |
 | 线性 Job Definition | Accepted | Not Started | Not Applicable | [Job Design](designs/0002-job-definition-and-runtime-instantiation.md) |
 | M1 Stateless Runtime | Accepted | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
+| M2 Operator work Retry | Accepted | Not Started | Not Applicable | [Failure Design §1](designs/0006-failure-panic-and-shutdown.md#1-失败暂停与恢复) |
 | M2 Position / Completion | Discussing | Not Started | Not Applicable | [Verification Design §2.2](designs/0008-runtime-verification-and-observability.md#22-m2-实现前必须收敛) |
 | 异步 Sink 协议 | Discussing | Not Started | Not Applicable | [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | Kafka Consumer Group / Rebalance | Accepted | Not Started | Not Applicable | [ADR-0002](decisions/0002-use-kafka-consumer-group-for-external-coordination.md) |
@@ -85,7 +86,7 @@ tracker、Kafka 或 ClickHouse 实现。
   [Source Design §1.3](designs/0003-source-reader-and-admission.md#13-可用性通知与控制事件)。
 - M1 Reader 的非阻塞读取在语义上返回 `ReadResult[T], error`，`TryRead` 等只是参考名称；
   result 只表达 ready/unavailable/finished，error 表达读取失败，invalid state 作为契约错误
-  进入 Failure Policy。正常结束先交付
+  进入 Job 级 failure 路径且不借用 Operator work Retry。正常结束先交付
   已缓存记录，读取失败则优先于尚未交接的缓存，详见
   [Source Design §1.2](designs/0003-source-reader-and-admission.md#12-非阻塞-reader)。
 - Memory Source 定位为动态有界的 Runtime 参考 Source、确定性测试设施、benchmark 输入和
@@ -119,6 +120,11 @@ tracker、Kafka 或 ClickHouse 实现。
   最小 workload；标准 `testing.B` 输出与 `ReportMetric` 是原始事实，`benchstat` 负责多轮比较。
   结果联合解释 work 级吞吐、延迟、分配和 peak in-flight，不允许通过扩大资源或削弱语义制造
   提升，详见 [Verification Design §1.8](designs/0008-runtime-verification-and-observability.md#18-m1-benchmark)。
+- M2 Operator Retry 以整个 work attempt 为恢复单位，在 `JobBuilder` 配置 finite 或 explicit
+  unlimited budget 及内置 fixed/exponential backoff。任意 retry blocker 先原子暂停整个 Source
+  的新业务 admission，已接纳 work 继续收敛；所有 blocker 成功后恢复，有限预算耗尽只能
+  FailJob。Runtime 为每个 active failed work 保留第一次 error，详见
+  [Failure Design §1](designs/0006-failure-panic-and-shutdown.md#1-失败暂停与恢复)。
 
 能力契约与依赖见 [Design Map](designs/design-map.md)，长期取舍索引见
 [Decision Index](decisions/README.md)。
@@ -127,13 +133,13 @@ tracker、Kafka 或 ClickHouse 实现。
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
 
-1. M2 Retry 的适用错误、预算、backoff/jitter、耗尽动作和 Job 级恢复范围；
-2. M2 position/Envelope、异步 Sink/completion；
+1. M2 Source split/position 与 Runtime Envelope 的表示和 identity 组织；
+2. M2 异步 Sink/completion 及 Sink effect Retry；
 3. Kafka/ClickHouse Connector、M2 指标、故障注入和交付保证审核。
 
 ## 当前唯一下一步
 
-讨论并接受 M2 Retry 的适用错误、预算、backoff/jitter、耗尽动作和 Job 级恢复范围。
+讨论并接受 M2 Source split/position 与 Runtime Envelope 的表示和 identity 组织。
 
 ## 最近验证
 

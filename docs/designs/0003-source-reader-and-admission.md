@@ -58,22 +58,22 @@ const (
 
 `ReadResult` 只表达正常读取状态，`error` 表达读取失败：
 
-- `err != nil` 时 Runtime 忽略 `ReadResult`，释放尚未转交的 permit，并把错误交给
-  Failure Policy；
+- `err != nil` 时 Runtime 忽略 `ReadResult`，释放尚未转交的 permit，并把错误交给 Job 级
+  failure 路径；它没有对应 work，不进入 Operator work Retry；
 - `ReadReady` 是唯一使 `Value` 有效并转移记录 ownership 的状态；
 - `ReadUnavailable` 表示当前暂时无数据，Runtime 释放 permit 并等待可用性通知；
 - `ReadFinished` 表示 Source 已永久正常结束，后续不得再返回记录；
 - `ReadStateInvalid` 是用于捕获零值 `ReadResult[T]{}` 和未知枚举值的防御性哨兵，不是
   Reader 可主动返回的正常状态；
-- Runtime 把 invalid/unknown state 包装为可识别的 `InvalidReadResultError`，释放 permit 后交给
-  Failure Policy。M1 只有 FailJob 时它直接终止 Job；M2 引入 Retry 后遵守用户策略，
-  不在 Runtime 内硬编码处置动作。
+- Runtime 把 invalid/unknown state 包装为可识别的 `InvalidReadResultError`，释放 permit 后进入
+  Job 级 failure 路径。M1/M2 都直接 FailJob；未来若增加 Source/Job 恢复必须独立设计，不得
+  借用没有 work identity 的 Operator work Retry。
 
 当 Source 正常结束时，Connector 先交付已经预取的有界缓存记录，缓存清空后才
 返回 `ReadFinished`，且该状态永久保持。当读取失败与缓存记录同时可观察时，失败优先：
 当次 `TryRead` 返回 error，不在该调用中继续交付缓存记录。M1 随后 FailJob 并在关闭时
-丢弃尚未交接的 Source-owned 缓存；M2 选择 Retry 后是否保留并继续交付原缓存，留待 Retry/
-Connector 恢复契约决定。
+丢弃尚未交接的 Source-owned 缓存；M2 同样由 FailJob 关闭当前 Source，不在当前 Run 中保留
+缓存并尝试重建。未来 Source/Job 恢复若需要复用缓存，必须另行定义 ownership 与 fence。
 
 ### 1.3 可用性通知与控制事件
 
@@ -279,4 +279,3 @@ loop 和 Reader 等待，再执行 Close。Close 幂等、不伪装成正常 fin
   附加诊断；failed 后 Finish、finished 后 Fail 和 closed 后的 Controller 操作返回可区分的
   生命周期错误；
 - Close 使生命周期最终进入 closed，但不改写既有正常或失败根因。
-
