@@ -29,7 +29,7 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | M1 Stateless Runtime | Accepted | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
 | M2 Operator work Retry | Accepted | Not Started | Not Applicable | [Failure Design §1](designs/0006-failure-panic-and-shutdown.md#1-失败暂停与恢复) |
 | 统一 RunError 与多错误因果 | Accepted | Not Started | Not Applicable | [Failure Design §1.7](designs/0006-failure-panic-and-shutdown.md#17-公开-runerror) |
-| M2 Position / Completion | Position/identity/outcome Accepted; tracker details Discussing | Not Started | Not Applicable | [Position Design](designs/0007-position-and-kafka-rebalance.md) · [Sink Design](designs/0005-sink-handoff-and-completion.md) |
+| M2 Position / Completion | Accepted | Not Started | Not Applicable | [Position Design](designs/0007-position-and-kafka-rebalance.md) · [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | 异步 Sink 协议 | Accepted | Not Started | Not Applicable | [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | Kafka Consumer Group / Rebalance | Accepted | Not Started | Not Applicable | [ADR-0002](decisions/0002-use-kafka-consumer-group-for-external-coordination.md) |
 | Kafka / ClickHouse Connector | Discussing | Not Started | Not Applicable | [Roadmap M2](roadmap.md#6-m2source-position完成跟踪与生产级-sink) |
@@ -151,6 +151,12 @@ tracker、Kafka 或 ClickHouse 实现。
   `CompletionID`；Retry 更换 attempt identity，异步 Sink 输出使用 `SinkItemID`。M2 暂定一个
   Source element 恰好产生一个 Record，未来 checkpoint 保存完整 split state 并成为恢复权威，
   详见 [Position Design §1](designs/0007-position-and-kafka-rebalance.md#1-position-与第一版一致性保证)。
+- Completion Tracker 保持 Runtime 私有，不公开逐记录 Ack、Completion identity 或 Done handle。
+  Work 只以 Success/Failed/Cancelled 终结并恰好释放一次 permit；多输出必须全部 Sink Success 才
+  成功，首个失败立即 FailJob 并进入有界 drain。Runtime 按完整 ownership scope 维护 admission
+  顺序 gap，只让连续 Success 前缀推进 safe position，并把 safe、in-flight commit、committed
+  position 和 generation fence 分离，详见
+  [Position Design §1.4](designs/0007-position-and-kafka-rebalance.md#14-work-终态success-与-permit)。
 
 能力契约与依赖见 [Design Map](designs/design-map.md)，长期取舍索引见
 [Decision Index](decisions/README.md)。
@@ -159,13 +165,11 @@ tracker、Kafka 或 ClickHouse 实现。
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
 
-1. Completion Tracker 的零/多输出、permit 释放、position gap 和 generation fence；
-2. Kafka/ClickHouse Connector、指标、故障注入和
-   交付保证审核。
+1. Kafka/ClickHouse Connector、指标、故障注入和交付保证审核。
 
 ## 当前唯一下一步
 
-讨论并接受 Completion Tracker 的零/多输出、permit 释放、position gap 和 generation fence。
+讨论并接受 Kafka 客户端适配的 poll、pause、commit 与 control callback 执行模型。
 
 ## 最近验证
 

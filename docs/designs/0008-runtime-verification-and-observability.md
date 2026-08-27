@@ -232,7 +232,6 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
 
 ### 2.2 M2 实现前必须收敛
 
-- Completion Tracker 的零/多输出、permit 释放、position gap 和 generation fence；
 - Kafka 客户端适配、poll/pause/commit、assignment/revoke/lost 和 commit 失败规则；
 - ClickHouse batch、flush、部分失败、unknown effect 和关闭 deadline；
 - M2 指标、故障注入矩阵和 at-least-once 声明审核。

@@ -1,6 +1,6 @@
 # 0007：Position、Ownership 与 Kafka Rebalance
 
-状态：Accepted（总体契约与 Runtime 表示已定；M2 客户端适配仍待收敛）
+状态：Accepted（Position、Completion Tracker 与 ownership 契约已定；M2 客户端适配仍待收敛）
 最后更新：2026-08-27
 适用阶段：M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Source Reader](0003-source-reader-and-admission.md) · [Sink Handoff](0005-sink-handoff-and-completion.md) · [ADR-0002](../decisions/0002-use-kafka-consumer-group-for-external-coordination.md)
@@ -76,14 +76,97 @@ Reader、position capability 与 control event 的公开边界已经在
 [Source Design](0003-source-reader-and-admission.md) 接受；Envelope、WorkID、generation 引用和
 私有存储布局仍由受约束实现原型细化，不得改变上述可见性、scope 和 identity 契约。
 
-### 1.4 generation fence
+### 1.4 Work 终态、Success 与 permit
+
+Completion Tracker 是 Runtime 私有的正确性组件。它不向用户或 Connector 暴露 `Ack`、
+`Complete`、`CompletionID` 或 `WorkHandle.Done()`；Source 只提供 split、position、交接顺序和
+安全位置提交能力，Sink reporter 只报告 item 的最终事实。Runtime 自行持有 `WorkID`、attempt、
+终态、gap 和 generation 关联。实现可以使用单协调器或按 split 分片，但对外只表现为同一套
+逻辑串行、幂等的状态机。
+
+Work 只有三种终态：`Success`、`Failed` 和 `Cancelled`。Operator Retry 是保留同一 work 的
+非终态，Retry 期间继续持有原 permit；`SinkUnknown` 是导致 `Failed` 的原因，不是第四种 work
+终态。分类规则为：
+
+- Operator Chain 成功且产生零输出时，不调用 Sink，attempt seal 后直接 Success；
+- 有输出时，只有 sealed 的完整 group 已被 Sink 接管且每个 item 最终都是 `SinkSucceeded`，
+  work 才 Success；
+- Operator Retry 预算耗尽、Sink `NotApplied`/`Unknown` 或关闭时缺失 item 结果均为 Failed；
+- FailJob、正常停止或 ownership fence 前尚未交给 Sink 的 queued work 为 Cancelled；已经
+  started 的 work 只有在 `Process` 返回并 seal 前或尚未转移 terminal outputs 时才可取消；
+- 已由 Sink 接管的 effect 不能假定可撤销，必须等待统一 deadline；fence 时仍未明确的结果按
+  uncertain failure 终结为 Failed，而不是 Cancelled。
+
+Success 的线性化顺序是：校验当前 Runtime execution、`WorkID`、attempt、reporter 与 ownership
+generation 仍有资格；原子写入 Success；更新 positioned tracker 并推进可能形成的连续 safe
+frontier；记录 work-completed metric；最后确保 permit 恰好释放一次。具体指令顺序可以由私有
+实现优化，但外部可观察结果必须等价，任何迟到或重复事件都不能再次终结 work、记录成功或
+释放 permit。
+
+Attempt seal 是 Success 的必要前提。Worker 空闲、进入 terminal queue、Collector 接受输出或
+Sink `Accept` 返回 Accepted 都不释放 work permit。Failed/Cancelled 在终态线性化时同样只释放
+一次；position commit 在 permit 释放后由独立有界状态继续，不占用 work permit。
+
+### 1.5 多输出聚合与失败收敛
+
+一个有输出 work 在 Sink `Accept` 时建立固定、不可扩张的 item table；pending-accept 期间的同步
+callback 先暂存，只有接管成立后才应用。全部 item Success 才形成 work Success。
+
+首个 `SinkNotApplied`、`SinkUnknown` 或缺失结果使 work 立即 Failed、触发 FailJob 并释放 permit，
+不等待同组其余 item 才停止 admission。Reporter 随后只保留有界的轻量 drain/fence 状态：后来
+的失败进入 secondary diagnostics，后来成功只完成 drain，均不能改变 work 终态或 safe
+position。Reporter 只有在 admission 已停止的失败收尾阶段才可短暂晚于 work permit 存活，且其
+item table、pending results 和 wakeup 仍受 Sink item/global in-flight 容量约束。零输出 work 不
+创建 reporter。
+
+### 1.6 Position gap tracker
+
+Position gap tracker 属于 Runtime，而不是 Source。它按完整 ownership scope
+`(Source instance, SplitID, generation)` 管理，并为每个 split 按 Reader admission 顺序保存
+positioned work entry。Runtime 不比较不透明 `SourcePosition`；顺序完全来自 Connector 在
+admission 前保证的 split-local recovery order。
+
+只有连续的 Success 前缀能够推进 safe frontier。Failed、Cancelled 或非终态 work 都形成 gap，
+后面的 Success 不得越过它；零输出 Success 与普通 Success 一样填补 entry。已经弹出的成功前缀
+压缩为最新 safe position，不保留逐 work 历史。每个 admitted work 最多一个 entry，Retry 不创建
+新 entry，未压缩 entry 总数由全局 `MaxInFlightWorks` 等 admission 容量约束；新 generation 不
+继承旧 generation 的 gap。
+
+这一模型适用于 Kafka offset、文件位置、CDC LSN、队列 sequence 等具有 split-local 全恢复顺序
+的 Source。没有稳定全序、多维 cursor，或在 Source 层把一个 element fan-out 为多个独立完成
+单元的 Source，不能直接声明该 position 能力；后者需要未来的 element completion/checkpoint
+协议。
+
+### 1.7 Safe、in-flight 与 committed position
+
+Work Success 只推进 Runtime 的 safe position，不等于外部提交成功。正常运行中 Runtime 可以
+合并同一 split 的多个 safe advance；每个 split 至多有一个普通 commit in flight，新 safe 在
+提交期间只把状态标记为 dirty 并保留最新值，当前提交成功后再发起必要的下一次提交。
+`PositionCommitter` 可以批量提交多个 split，但批次返回非 nil error 时 Runtime 保守地认为该批
+没有任何 split 成为 committed，除非未来接口明确提供逐 split 结果。
+
+普通 commit 返回 nil 才推进 committed frontier。Revoke 使用 `BeginRevoke` 冻结的最新 safe
+position，由 Connector 在 callback goroutine 提交；`RevokeHandle.Complete(nil)` 才更新
+committed 并 fence generation，error 则不更新而直接 fence。Lost 不提交旧 generation。任何旧
+commit result 在 fence 后都不能更新当前 generation；同一 split 后续被重新 Assign 时从外部
+committed position 恢复，而不是从旧 Runtime safe state 继承。
+
+### 1.8 generation fence
 
 每次 partition ownership 带 generation。Runtime 以 Source instance、`SplitID` 和 generation
-形成当前 ownership scope，Work 保存对该 scope 的绑定。失效 ownership 的迟到 completion、
-Sink callback 或 commit 请求不能推进新 owner 的 position；校验完整 scope，而不是只比较裸
-generation 数值。
+形成当前 ownership scope，Work 及所有 completion/reporter/commit token 都绑定完整 scope，
+不能只比较裸 generation 数值。
 
-### 1.5 M2 恢复与未来 checkpoint
+Fence 必须原子地停止接收该 scope 的新 completion progress，按 §1.4 终结未完成 work 并恰好
+释放一次 permit，使旧 attempt、reporter 和 commit token 失效，清除 gap、dirty 与 in-flight
+commit 状态，只保留有界的迟到诊断。Fence 前已经成立的终态不变；fence 后任何事件不得反转
+终态、重复释放 permit、推进 safe/committed position 或污染新 generation。
+
+Cooperative rebalance 中 retained split 不 fence。Revoked split 在 handle Complete 或 deadline
+到期时 fence；Lost 立即 fence；同一 split 再次 Assign 必须创建新 generation。新的 Runtime Run
+创建新的 Source instance scope，因此上一次 execution 的迟到 token 同样无资格。
+
+### 1.9 M2 恢复与未来 checkpoint
 
 M2 的 safe position 表示 Sink effect 已明确成功的连续 Source 前缀，外部 committed position
 是当前无 checkpoint 阶段的恢复依据。未来 checkpoint 会保存 Connector 定义并版本化序列化的
@@ -94,7 +177,7 @@ Source position、Runtime completion frontier 和 checkpoint cut 是不同概念
 或把 safe position 命名为 checkpoint position。M2 不提前冻结 split-state serializer、barrier、
 in-flight snapshot 或 Sink transaction API。
 
-### 1.6 at-least-once
+### 1.10 at-least-once
 
 Sink 未明确成功时不能推进 position。结果未知时，为避免丢失，第一版选择重试或失败恢复，而不是提前确认。这可能产生重复。
 

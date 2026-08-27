@@ -773,10 +773,11 @@ Resume Position
 
 职责：
 
-- 跟踪并发输入是否进入终态；
-- 按 split 计算连续完成位置；
+- 作为 Runtime 私有组件跟踪 Work 的 Success、Failed 或 Cancelled 终态；
+- 聚合零/多输出 Sink completion，并使每个 Work 的 permit 恰好释放一次；
+- 按 Source instance、split 和 generation 的 admission 顺序计算连续成功位置；
 - 阻止较大 position 越过尚未完成的前序记录；
-- 向 Source Connector 发布 safe resume position。
+- 将 safe、in-flight commit 与 committed position 分离，并 fence 旧 ownership 的迟到事件。
 
 示例：
 
@@ -787,6 +788,10 @@ position 102  success
 
 safe position 仍不能越过 100
 ```
+
+Tracker 不公开逐记录 Ack、Completion identity 或 Done handle。Source 和 Sink 只提供窄事实接口；
+Work identity、gap entry、item 聚合和 generation token 均留在 Runtime 内部。完整终态、permit、
+gap、commit 和 fence 契约见 [Position Design §1](designs/0007-position-and-kafka-rebalance.md#1-position-与第一版一致性保证)。
 
 ### 8.4 Ownership Generation
 
