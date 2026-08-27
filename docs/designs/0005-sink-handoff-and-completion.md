@@ -1,7 +1,7 @@
 # 0005：Sink Handoff 与 Completion
 
-状态：Accepted（M1 Memory Sink 条款已定；M2 异步接口细节仍待收敛）
-最后更新：2026-08-26
+状态：Accepted（M1 Memory Sink 与 M2 completion/Retry 边界已定；M2 接口细节仍待收敛）
+最后更新：2026-08-27
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Operator Attempt](0004-operator-attempt-and-collector.md)
 
@@ -111,7 +111,7 @@ Accept(group) returns error
 
 成功返回是整组 `Record` 及其可达引用数据的 ownership 转移点；Runtime 之后不得
 修改或复用。返回 error 时 Memory Sink 不得保存组内任何 Record 或引用，ownership 仍属于
-Runtime，错误进入 Failure Policy。不存在先保存部分记录再返回 error 的合法路径。
+Runtime，错误触发 FailJob。不存在先保存部分记录再返回 error 的合法路径。
 
 零输出 work 没有 Sink effect，Runtime 不调用 Memory Sink，直接将该 work 标记为 Success 并
 释放 permit。这是 Filter 不保留、FlatMap 返回空结果或自定义 Operator 正常不 Emit 的
@@ -159,7 +159,8 @@ Runtime 与 Sink 之间使用有界、通知驱动的交接边界：
 
 - Runtime 为每个 Sink 实例提供独立的 Sink Coordinator；只有 Coordinator 调用 `Accept`，Pipeline Worker 不直接调用 Sink，也不维护 Sink 容量状态；
 - Worker 只向有界 terminal queue 提交 completed work；交接成功后可以处理下一条，但端到端 permit 仍持续到 Sink effect 完成；
-- Sink Coordinator 判断哪些 work 当前有资格产生 Sink effect，并负责选择、等待、公平性和重试调度；
+- Sink Coordinator 判断哪些 work 当前有资格产生 Sink effect，并负责选择、等待、公平性和
+  Backpressured 后的再次接管调度；
 - Sink Connector 只被动接收一个 work 的完整 `[]SinkItem[T]`，不感知 `Work` 内部状态，也不感知 Runtime 采用 pull、push、mailbox 还是 event loop；
 - Sink 对容量的判断和整组责任接管必须是一个原子操作，方法返回 `(SinkAcceptStatus, error)`；
 - `SinkAccepted, nil` 表示 Sink 已取得该 work 全部输出的后续责任；
@@ -214,15 +215,30 @@ Sink completion 至少区分三种事实：
 2. `SinkNotApplied`：外部协议能够证明未生效，`Err` 必须非 nil；
 3. `SinkUnknown`：结果未知、可能已经生效，`Err` 必须非 nil。
 
-超时、断连等不能自动解释为“未写入”。错误临时或永久、是否重试是失败策略的另一维度，不能由这三种事实直接推导。
+超时、断连等不能自动解释为“未写入”。这三种 outcome 只表达 Sink 最终确认的外部事实，
+不承担错误分类或 Retry 决策。
 
-如果 Sink 能可靠报告每个输出的结果：
+M2 Runtime 不提供 Sink effect Retry，也不解析 error、把错误分类为 retryable/permanent，或把
+失败 item 再次提交给 Sink。Sink 接管 items 后，是否 Retry、Retry 哪些物理请求或 item、预算与
+backoff 均属于 Sink Connector 内部策略；使用方负责选择和配置适合其数据、schema 与外部系统的
+策略。内部 Retry 期间不得报告中间失败，只有 Sink 决定不再 Retry、Retry 耗尽或完成后才报告
+上述最终 outcome。Connector 的 buffer、待重试项、timer、goroutine 和外部请求仍必须有界，
+并服从 lifecycle context 与 Close deadline。
+
+如果 Sink 能可靠确认每个输出的最终结果：
 
 - 已确认成功的部分保持成功；
-- 只重试确认未生效或仍需处理的部分；
-- 原始 work 等所有必要输出都完成后才终结。
+- Connector 可以在内部只重试它认为仍需处理的部分；
+- Runtime 不回滚已成功部分，也不重新执行 Operator Chain。
 
-整批重试是外部协议无法提供可靠细粒度结果时的退化方案。
+`SinkNotApplied` 或 `SinkUnknown` 都是 Sink 已经放弃内部恢复的最终失败。Runtime 收到一个 work
+的第一个最终失败时立即触发 FailJob，不等待该 work 的其余 item 全部报告；第一个失败是
+primary error，后续失败作为 secondary errors。已经由 Sink 接管的其他 item 仍在统一 shutdown
+deadline 内有限收敛。该 work 不形成 Success，不能推进 safe position。Operator work 的
+FailJob/Retry 策略不适用于 Sink、Source 或 Runtime 内部错误。
+
+外部协议无法提供可靠细粒度结果时，Sink 可以在内部按整个物理 batch 恢复，但最终仍须逐 item
+报告可以成立的 outcome；不能用 batch error 替代已经接管 item 的 completion 事实。
 
 ### 1.5 completion 关联
 
@@ -292,4 +308,3 @@ admission/ownership 失效后拒绝迟到数据和 availability notification。�
 `Unknown`，最多提交 next offset 141；若该 commit 也未成功，恢复位置会早于 141，但绝不能
 因为 Sink 曾接管 141–150 而跳到 151。`Unknown` 或尚未提交的成功效果可能在恢复后重复，这是
 当前 at-least-once 边界。
-

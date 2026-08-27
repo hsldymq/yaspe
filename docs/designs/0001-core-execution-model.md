@@ -164,7 +164,7 @@ Chain 所需的信息，而不能仅依赖一个待共享的现成 Operator 对�
 - [Source Reader、Admission 与 Memory Source](0003-source-reader-and-admission.md)：非阻塞读取、通知竞态、reservation、ownership 与 Memory Source；
 - [Operator Attempt 与 Collector](0004-operator-attempt-and-collector.md)：Collector scope、Emit ownership、Chain 与 attempt；
 - [Sink Handoff 与 Completion](0005-sink-handoff-and-completion.md)：整组交接、Memory Sink、异步 completion 与关闭；
-- [Failure、Panic 与 Shutdown](0006-failure-panic-and-shutdown.md)：Failure Policy、FailJob、panic、错误因果与 deadline；
+- [Failure、Panic 与 Shutdown](0006-failure-panic-and-shutdown.md)：Operator Work Failure Policy、FailJob、panic、错误因果与 deadline；
 - [Position、Ownership 与 Kafka Rebalance](0007-position-and-kafka-rebalance.md)：safe position、generation 与 rebalance；
 - [Runtime 验证与可观测性](0008-runtime-verification-and-observability.md)：指标、确定性测试、race/leak、fault 与 benchmark。
 

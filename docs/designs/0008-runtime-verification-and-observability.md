@@ -53,6 +53,10 @@
 - 零输出 work 能直接完成；
 - 多输出 work 只在全部必要 effect 完成后终结；
 - Sink 入队、外部完成、输入终结和 position 提交可以分别观测和测试。
+- Sink 内部 Retry 的中间失败不会形成 Runtime completion；最终 `NotApplied/Unknown` 的第一个
+  报告立即触发 FailJob，Operator Retry 配置不得捕获或重新提交该 effect；
+- Sink 内部待重试项、timer、请求和 goroutine 保持有界，并响应 lifecycle cancel 与 Close
+  deadline；
 - 关闭测试覆盖已接管 buffer、外部 in-flight、deadline 前部分成功、可证明未生效、结果未知、
   fence 前后并发 callback，以及 `Close` error 不能替代逐 item completion；
 - Memory Sink 单元测试覆盖整组成功、固定失败计划下的全组拒绝、零输出不调用 Sink、
@@ -176,7 +180,7 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
   出现重叠 attempt；
 - 输入 ownership 测试覆盖 Runtime 跨 backoff 保留输入以及内置 Operator 不原地修改；测试只
   能验证内置行为和公开契约，不宣称能检测任意用户代码对可达引用数据的违规修改；
-- 用 barrier 把 Source admission 分别暂停在 Failure Policy 判定前、active failure 登记前后、
+- 用 barrier 把 Source admission 分别暂停在 Operator Work Failure Policy 判定前、active failure 登记前后、
   lane 释放前后和并发 Read 线性化两侧，证明 fence 安装后没有新业务 admission，已越过边界的
   work 仍继续收敛；
 - 多 blocker 测试覆盖同时成功、再次失败、最后移除与新登记竞争，证明 gate 只在 active set
@@ -205,7 +209,7 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
 
 ### 2.2 M2 实现前必须收敛
 
-- Sink `NotApplied/Unknown` 的 Retry 资格，以及 active work failure collection 的最终公开错误 API；
+- active work failure collection 与 Sink secondary errors 的最终公开错误 API；
 - 非阻塞 Reader、availability notification、Source control event 和 Connector Open/Close 的最终接口；
 - Sink `Open/Accept/Close`、原子接管、reporter、capacity notification 和 callback slice ownership 的最终接口；
 - `SinkSucceeded`、`SinkNotApplied`、`SinkUnknown`、部分成功和迟到/重复 callback 的精确动作；

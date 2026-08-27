@@ -464,7 +464,7 @@ M1 已固定非阻塞读取在语义上返回 `ReadResult[T], error`；Design �
 `Available` 只是参考名称，容量为 1 的 channel 也只是参考通知实现，不是对最终公开
 Go API 或通知载体的定稿。任何最终实现都必须保持不丢失唤醒的语义。`ReadResult` 的
 正常状态为 ready、unavailable 和 finished，零值/unknown state 通过
-`InvalidReadResultError` 进入 Failure Policy；读取 error 与正常状态分开返回。正常结束先
+`InvalidReadResultError` 进入 Job 级 FailJob 路径；读取 error 与正常状态分开返回。正常结束先
 drain Connector 缓存再呈现永久 finished，读取失败则优先于尚未交接的缓存数据。
 完整结果和错误契约见 [Source Design §1.2](designs/0003-source-reader-and-admission.md#12-非阻塞-reader)。
 
@@ -557,8 +557,9 @@ version；收到 `SinkBackpressured` 后，若 version 已变化则立即重试�
 
 异步回调只向 Runtime 报告结果事件，由 Runtime 协调路径串行、幂等地更新 completion、
 permit、safe position 和 generation 状态。结果区分确认成功、可证明未生效和可能已生效的
-未知状态。若外部协议可靠支持逐项结果，可以保留成功部分并只重试未完成部分；否则按
-整个 batch 处理是其特殊情况。重试与否仍由失败策略决定。
+未知状态。Sink 接管后自行决定是否以及怎样 Retry，只向 Runtime 报告最终 outcome；Runtime
+不解析 error、不重新提交 item，也不重新执行 Operator Chain。首个最终失败立即触发 FailJob，
+其余已接管 item 在统一 shutdown deadline 内有限收敛。
 
 外部客户端 callback 只能调用 reporter/notifier 提交事实。Capacity 通过调用期间同步推进的
 版本化 signal 唤醒 Coordinator；completion 进入每个 reporter 独立且有界的 result inbox。
@@ -567,9 +568,9 @@ permit、safe position 和 generation 状态。结果区分确认成功、可证
 上限约束。Sink Coordinator 聚合 item outcome 为 work-level completion 后再交给 Completion
 Tracker，由后者释放 permit 并维护 position；两类入口无需共用普通 FIFO event channel。
 
-未来的通用异步 Sink 基础设施可以参考 Flink，在 Connector 提交物理 batch 时再提供请求级
-result handler，并负责把一个物理请求的结果聚合回一个或多个 work reporter；该内部层级不
-改变稳定的 `Accept(items, reporter)` 边界，也不把重试策略混入 Connector 报告的结果事实。
+未来的 Connector 层通用异步 Sink 基础设施可以参考 Flink，在提交物理 batch 时提供请求级
+result handler，并负责内部 Retry 以及把一个物理请求的最终结果聚合回一个或多个 work
+reporter；该层级不改变稳定的 `Accept(items, reporter)` 边界，也不把中间失败冒充最终事实。
 
 Collector 与 Sink 的区别：
 
@@ -592,7 +593,7 @@ Sink
 - 控制并行度、在途数量和背压；
 - 调用 Operator；
 - 统一传播错误和取消；
-- 应用 Failure Policy；
+- 应用 Operator Work Failure Policy；
 - 确保所有 Runtime goroutine 和资源最终被回收；
 - 后续管理完成跟踪、状态、时间和 checkpoint。
 
@@ -653,7 +654,7 @@ lane 创建 Chain。内置 Transformation 可以共享用户函数值，但每�
 - 不无限增长；
 - 不自动把入队视为端到端处理完成。
 
-### 7.10 Failure Policy
+### 7.10 Operator Work Failure Policy
 
 状态：`Planned`，M1 支持 FailJob，M2 扩展受控 Retry。
 
@@ -661,6 +662,9 @@ lane 创建 Chain。内置 Transformation 可以共享用户函数值，但每�
 
 - 根据未被用户函数吸收的错误、失败阶段和 attempt 决定 Runtime 行为；
 - 将 Operator 的“发生错误”与 Runtime 的“如何处置”分离。
+
+该策略只处理 Operator work attempt，不覆盖 Source read error、Sink 最终失败或 Runtime 内部
+错误；这些没有安全 work Retry 单位的错误固定进入 FailJob。
 
 终态：
 
@@ -674,12 +678,13 @@ Cancelled
 
 ```text
 FailJob
-RetryRecord
+RetryWork
 ```
 
 Runtime 不提供 Skip/Discard record 动作，也不在 Transformation 上提供 `OnError`。Filter
 不保留、FlatMap 返回零输出或自定义 Operator 不 Emit 并返回 nil 都是正常 Success；用户以
-这些方式在业务逻辑附近吸收可忽略错误。未被吸收的 error 才进入 Job 级 Failure Policy。
+这些方式在业务逻辑附近吸收可忽略错误。未被吸收的 Operator error 才进入 Job 级 Operator
+Work Failure Policy。
 未来 Dead Letter 应建模为显式业务输出、Side Output、分支或专用 Sink，而不是失败终态。
 
 重试不意味着回滚。只要此前已有 Emit 或外部副作用，就可能产生重复。策略必须了解失败阶段和下游能力。
@@ -704,8 +709,7 @@ completion responsibility，但不占 lane；不同 retry work 可在 Parallelis
 同一暂停期间继续出现的失败进入统一的 active failure set，而不由每条记录创建不受协调的
 后台重试循环。每个 active failed work 保留第一次错误和有界 attempt 摘要；恢复成功后移除，
 任一 work 耗尽时以触发项为 primary，并快照当时仍活跃的 failure collection。公开错误集合
-形态以及 Sink effect Retry 仍属于后续阶段问题，
-不在本文预先固定为具体类型或接口。
+形态仍属于后续阶段问题，不在本文预先固定为具体类型或接口。
 
 ## 8. Reliability Plane
 
@@ -901,7 +905,7 @@ Local Runtime
 ├── Worker Pool
 ├── Operator Chain(s)
 ├── Runtime Collectors
-├── Failure Policy
+├── Operator Work Failure Policy
 └── Sink
 ```
 
@@ -947,7 +951,7 @@ Local Runtime
 ├── Bounded Work
 ├── Workers
 ├── Completion Tracker
-└── Failure Policy
+└── Operator Work Failure Policy
           │
           v
 Async Batching Sink
@@ -1158,8 +1162,8 @@ Operator returns error
    ↓
 Runtime classifies failure stage
    ↓
-Failure Policy
-   ├── RetryRecord (when safe/allowed)
+Operator Work Failure Policy
+   ├── RetryWork (when safe/allowed)
    └── FailJob
 ```
 
@@ -1358,7 +1362,8 @@ State API      → specific backend implementation
 4. Source 已读取不等于输入已完成。
 5. Collector 已接受不等于外部 Sink 已完成。
 6. Sink 入队不等于外部副作用已完成。
-7. 错误策略由 Runtime 统一应用，Operator 只报告错误。
+7. Operator Work Failure Policy 由 Runtime 统一应用，Operator 只报告错误；Sink 内部恢复结束后
+   报告最终 completion，Sink 最终失败固定触发 FailJob。
 8. work attempt 可以丢弃尚未转移给 Sink 的末端输出，但重试不隐含回滚已转移输出或外部副作用。
 9. Source/Connector 专有类型不进入业务 Operator API。
 10. 并行执行不默认提供全局顺序。

@@ -1,17 +1,18 @@
 # 0006：Failure、Panic 与 Shutdown
 
-状态：Accepted（M1 FailJob 与 M2 Operator work Retry 已定；Sink effect Retry 与错误公开 API 待定）
-最后更新：2026-08-26
+状态：Accepted（M1 FailJob、M2 Operator work Retry 与 Sink 最终失败边界已定；错误公开 API 待定）
+最后更新：2026-08-27
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Sink Handoff](0005-sink-handoff-and-completion.md)
 
-本文是 Failure Policy、暂停、FailJob、panic 分类、错误因果与有界关闭的权威契约。
+本文是 Operator Work Failure Policy、暂停、FailJob、panic 分类、错误因果与有界关闭的权威契约。
 
 ## 1. 失败、暂停与恢复
 
 ### 1.1 错误不直接等于退出
 
-Job 在 `JobBuilder` 阶段统一选择 Operator work 使用 FailJob 或 Retry。M2 不提供按 error 类型
+Job 在 `JobBuilder` 阶段为 Operator work 选择 FailJob 或 Retry。该策略不覆盖 Source、Sink
+或 Runtime 内部错误。M2 不提供按 error 类型
 分类的用户函数，也不提供自定义 BackoffFunc；这些扩展只有在后续真实需求证明内置策略不足时
 才重新讨论。未配置 Retry 的默认行为仍是 FailJob，升级 Runtime 不得使既有 Job 自动重复执行。
 
@@ -59,8 +60,8 @@ fence，之后才能释放 lane 或安排 backoff。已经跨过 admission 线�
 
 Operator 返回 error 或用户 `Process`/回调 panic 包装成 `PanicError` 后，统一遵守 Job 的
 Retry/FailJob 配置。context 取消与 shutdown 不 Retry；yaspe 内部 panic 强制 FailJob；Source
-读取错误没有对应 work，不进入 work Retry。Sink effect 是否可 Retry 取决于后续
-`SinkNotApplied`/`SinkUnknown` 契约，不由本节预先决定。
+读取错误没有对应 work，不进入 work Retry。Sink effect 的恢复属于 Sink Connector 内部；
+Runtime 不以本策略重试 Sink effect。
 
 Retry 的最小恢复单位是整个 work attempt：
 
@@ -126,6 +127,24 @@ work Retry 成功后从 active set 移除，并可通过日志/observer 发布�
 单个 work 无论经历多少 attempt，其第一次 error 始终是该 work 的根因。多错误集合最终采用
 `Unwrap() []error`、primary 加查询接口或其他公开形态尚未决定，但内部从第一版开始保留这些
 信息，不能等 API 定稿后再丢失地补建。
+
+### 1.6 Sink 最终失败
+
+Sink 以 `SinkAccepted, nil` 接管 items 后自行决定是否以及如何 Retry。Runtime 不解析 Sink
+error、不提供 retryable/permanent classifier、不重新提交 item，也不重新执行已经成功的
+Operator Chain。Sink 只在内部恢复结束后通过 reporter 报告最终的 `SinkSucceeded`、
+`SinkNotApplied` 或 `SinkUnknown`；完整 outcome 契约见
+[Sink Design §1.4](0005-sink-handoff-and-completion.md#14-completion-结果)。
+
+Runtime 收到一个 work 的第一个最终 `SinkNotApplied` 或 `SinkUnknown` 时立即触发 FailJob，
+不等待同一 work 的其他 item 全部完成后才停止 admission。该 error 是此次停止的 primary
+trigger；随后从同一或其他已接管 work 到达的最终失败作为 secondary errors 保留。已经接管的
+其余 item 仍按 §2 的统一 shutdown deadline 有限 drain，可信 success 继续形成 completion
+事实，但失败 work 不形成 Success，也不推进其 Source position。
+
+这条固定 FailJob 路径不受 Job 的 Operator Work Failure Policy 影响。未来若引入 checkpoint
+驱动的自动 Run/region 恢复或通用异步 Sink 基础设施，必须另行设计恢复单位、重复边界和状态
+恢复协议；M2 不把这些能力伪装成当前 work Retry。
 
 ## 2. FailJob、取消与关闭
 

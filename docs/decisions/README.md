@@ -10,6 +10,7 @@
 | ADR-0001 | Source 数据进入由 Runtime admission 控制 | Accepted | M1+ | [0001](0001-runtime-controlled-source-ingestion.md) |
 | ADR-0002 | 早期多实例 Kafka Source 使用 Consumer Group 协调 | Accepted | M2+ | [0002](0002-use-kafka-consumer-group-for-external-coordination.md) |
 | ADR-0003 | 使用仓库文档保存项目记忆与三维状态 | Accepted | 全阶段 | [0003](0003-use-repository-docs-as-project-memory.md) |
+| ADR-0004 | Sink Retry 留在 Connector 内部，最终失败由 Runtime FailJob | Accepted | M2–M6 | [0004](0004-keep-sink-retry-inside-connector.md) |
 
 ## 核心执行模型局部决定
 
