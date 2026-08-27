@@ -541,19 +541,26 @@ context 只控制单次接管调用，成功接管的
 异步操作不从属于它；Close 使用独立 context 控制有限收尾。
 
 `SinkResultReporter[T]` 通过 `Report([]SinkItemResult[T])` 增量或批量报告 item 结果，结果状态为
-`SinkSucceeded`、`SinkNotApplied` 或 `SinkUnknown`。成功结果必须具有 nil `Err`，后两者必须
-具有非 nil `Err`；没有底层异常时使用 yaspe 的标准哨兵错误。`Report` 不返回 error，调用时
+invalid、`SinkSucceeded`、`SinkNotApplied` 或 `SinkUnknown`；零值 invalid 用于捕获未初始化
+结果。成功结果必须具有 nil `Err`，后两者必须具有非 nil `Err`；没有底层异常时使用 yaspe
+的标准哨兵错误。`Report` 不返回 error，调用时
 results slice 的所有权转给 Runtime，Connector 此后不得读取、修改或复用该 slice 及其
 backing array。Runtime 因此可以不复制地把事件投递到协调路径。
 
 Runtime 负责判断 work 是否具有交付资格，包括暂停、position gap 和 generation fence，
-并负责选择、等待、公平性和重试调度。Sink Connector 只被动接收完整 items group，不感知
+并负责选择、等待、公平性和 Backpressured 后再次接管。Sink Connector 只被动接收完整 items group，不感知
 Runtime 内部采用 pull、push、mailbox 还是 event loop。容量判断与整组责任接管必须原子完成：
 交接方法返回 `(SinkAcceptStatus, error)`；`SinkAccepted, nil` 后责任转给 Sink，
 `SinkBackpressured, nil` 时责任仍在 Runtime，任何非 `nil` error 也表示一个输出都未接管且
 status 被忽略。回压不等于处理失败。容量恢复由 Sink 通过 Runtime 提供的通用通知入口报告，
 Runtime 再次尝试交接，不使用忙轮询。未来可以改变内部调度方式，只要不改变责任转移、
 有界背压和完成语义。
+
+Accepted 时 items slice 及 Record ownership 转给 Sink；Backpressured/error 时 Sink 不得保留
+items 或 reporter。pending-accept 阶段允许同步 callback，但若 Accept 最终未接管，Runtime
+以“无 ownership 却已发起 effect”的 Connector contract error FailJob。active reporter 下，
+相同结果重复只诊断，外来 item、矛盾结果、invalid outcome 或错误组合固定 FailJob；fence 后
+迟到调用只产生有界诊断。
 
 容量恢复通知采用单调 version，而不是 available 布尔状态。Coordinator 在 `Accept` 前观察
 version；收到 `SinkBackpressured` 后，若 version 已变化则立即重试，否则原子等待后续版本。
@@ -569,13 +576,19 @@ permit、safe position 和 generation 状态。结果区分确认成功、可证
 外部客户端 callback 只能调用 reporter/notifier 提交事实。Capacity 通过调用期间同步推进的
 版本化 signal 唤醒 Coordinator；completion 进入每个 reporter 独立且有界的 result inbox。
 同一 reporter 的多次增量 Report 合并为最多一个 pending wakeup，Coordinator drain 后才允许
-安排下一次；重复或非法结果在进入 pending 存储前丢弃。活跃 reporter 数量受全局 in-flight
+安排下一次；相同重复在进入 pending 存储前丢弃，非法结果投递 contract error。活跃 reporter 数量受全局 in-flight
 上限约束。Sink Coordinator 聚合 item outcome 为 work-level completion 后再交给 Completion
 Tracker，由后者释放 permit 并维护 position；两类入口无需共用普通 FIFO event channel。
 
 未来的 Connector 层通用异步 Sink 基础设施可以参考 Flink，在提交物理 batch 时提供请求级
 result handler，并负责内部 Retry 以及把一个物理请求的最终结果聚合回一个或多个 work
 reporter；该层级不改变稳定的 `Accept(items, reporter)` 边界，也不把中间失败冒充最终事实。
+
+关闭使用整个 Runtime shutdown 的统一绝对 deadline，不为 Sink 单独重开 timeout。停止新
+Accept、取消 lifecycle、Close 逐 item 报告、Runtime drain inbox 后才建立 reporter/notifier
+fence；Close error 或 nil 都不能替代缺失结果。deadline 前仍无法确认的 item 必须报告 Unknown，
+Close 后缺失结果成为 missing-result contract error。fence 前已进入 inbox 的结果必须应用，
+fence 后不得终结 work、释放 permit、推进 position 或改变冻结的 RunError。
 
 Collector 与 Sink 的区别：
 

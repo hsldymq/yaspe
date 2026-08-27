@@ -30,7 +30,7 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | M2 Operator work Retry | Accepted | Not Started | Not Applicable | [Failure Design §1](designs/0006-failure-panic-and-shutdown.md#1-失败暂停与恢复) |
 | 统一 RunError 与多错误因果 | Accepted | Not Started | Not Applicable | [Failure Design §1.7](designs/0006-failure-panic-and-shutdown.md#17-公开-runerror) |
 | M2 Position / Completion | Position/identity/outcome Accepted; tracker details Discussing | Not Started | Not Applicable | [Position Design](designs/0007-position-and-kafka-rebalance.md) · [Sink Design](designs/0005-sink-handoff-and-completion.md) |
-| 异步 Sink 协议 | Completion/Retry boundary Accepted; API details Discussing | Not Started | Not Applicable | [Sink Design](designs/0005-sink-handoff-and-completion.md) |
+| 异步 Sink 协议 | Accepted | Not Started | Not Applicable | [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | Kafka Consumer Group / Rebalance | Accepted | Not Started | Not Applicable | [ADR-0002](decisions/0002-use-kafka-consumer-group-for-external-coordination.md) |
 | Kafka / ClickHouse Connector | Discussing | Not Started | Not Applicable | [Roadmap M2](roadmap.md#6-m2source-position完成跟踪与生产级-sink) |
 | Dead Letter / Side Output | Planned for later | Not Started | Not Applicable | [Roadmap M4](roadmap.md#8-m4keyby分区执行与逻辑物理执行图) |
@@ -60,6 +60,11 @@ tracker、Kafka 或 ClickHouse 实现。
 
 ## 最近接受的决定
 
+- Sink 最终使用 `Open(SinkContext)`、整组原子 `Accept` 和统一 deadline 下的有限 `Close`；
+  Accepted 转移 items slice 与 Record ownership，Backpressured/error 全拒。绑定 reporter 支持
+  pending-accept 同步 callback，零值 outcome invalid，active 期协议违规 FailJob；capacity 使用
+  versioned notifier，Close 必须逐 item 收敛并在 drain inbox 后 fence，详见
+  [Sink Design](designs/0005-sink-handoff-and-completion.md)；
 - Source 最终组合非阻塞 `TryRead`、容量 1 且永不关闭的 `Available` channel、
   `Open(SourceContext)` 与有限 `Close`；positioned Source 通过可选 `PositionCommitter` 提交不透明
   split position，动态 ownership 使用 Assign、两阶段 BeginRevoke/RevokeHandle 和 Lost，并对
@@ -154,14 +159,13 @@ tracker、Kafka 或 ClickHouse 实现。
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
 
-1. M2 Sink `Open/Accept/Close`、reporter、capacity notification 与 callback ownership 最终接口；
-2. Completion Tracker、Kafka/ClickHouse Connector、指标、故障注入和
+1. Completion Tracker 的零/多输出、permit 释放、position gap 和 generation fence；
+2. Kafka/ClickHouse Connector、指标、故障注入和
    交付保证审核。
 
 ## 当前唯一下一步
 
-讨论并接受 M2 Sink `Open/Accept/Close`、reporter、capacity notification 与 callback ownership
-最终接口。
+讨论并接受 Completion Tracker 的零/多输出、permit 释放、position gap 和 generation fence。
 
 ## 最近验证
 

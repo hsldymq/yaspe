@@ -14,7 +14,7 @@
 | [0002 Job Definition 与 Runtime 实例化](0002-job-definition-and-runtime-instantiation.md) | type-state API、Factory、Build、生命周期、复用、类型擦除 | Accepted | 0001 |
 | [0003 Source Reader、Admission 与 Memory Source](0003-source-reader-and-admission.md) | Source lifecycle、非阻塞读取、split control、position commit、reservation、Memory Source | Accepted | 0001、ADR-0001 |
 | [0004 Operator Attempt 与 Collector](0004-operator-attempt-and-collector.md) | Collector scope、Emit ownership、Chain、attempt 暂存 | Accepted | 0001、0002 |
-| [0005 Sink Handoff 与 Completion](0005-sink-handoff-and-completion.md) | 整组交接、Memory Sink、异步 completion、有限关闭 | Completion/Retry boundary Accepted / M2 API details discussing | 0001、0004 |
+| [0005 Sink Handoff 与 Completion](0005-sink-handoff-and-completion.md) | 整组交接、Memory Sink、异步 completion、capacity、有限关闭 | Accepted | 0001、0004 |
 | [0006 Failure、Panic 与 Shutdown](0006-failure-panic-and-shutdown.md) | Operator Work Failure Policy、FailJob、RunError、panic、错误因果、shutdown | Accepted | 0001、0005 |
 | [0007 Position、Ownership 与 Kafka Rebalance](0007-position-and-kafka-rebalance.md) | split/position、Envelope identity、safe position、generation fence、Kafka rebalance | Accepted / client adapter discussing | 0001、0003、0005、ADR-0002 |
 | [0008 Runtime 验证与可观测性](0008-runtime-verification-and-observability.md) | 指标、确定性测试、race/leak、fault、benchmark、审核清单 | M1 Accepted / M2 Discussing | 全部近期执行契约 |

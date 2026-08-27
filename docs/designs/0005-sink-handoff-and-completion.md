@@ -1,6 +1,6 @@
 # 0005：Sink Handoff 与 Completion
 
-状态：Accepted（M1 Memory Sink 与 M2 completion/Retry 边界已定；M2 接口细节仍待收敛）
+状态：Accepted
 最后更新：2026-08-27
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Operator Attempt](0004-operator-attempt-and-collector.md)
@@ -25,11 +25,22 @@ Sink 一个也不接受
 
 Sink 接管后失败时，优先保留已经形成的 terminal output，并在 Sink 边界恢复，而不是重新执行 Operator Chain。
 
-交接 API 不向 Sink Connector 暴露 Runtime 内部的 `Work`。Runtime 把每个 terminal output 包装为 `SinkItem[T]`，其中包含业务 `Record[T]` 和仅供 Runtime 关联 completion 的不透明身份。Connector 接收该 work 产生的完整 `[]SinkItem[T]`；`T` 必须与 Sink 声明的输入类型一致，并由 Go 泛型在组装 Pipeline 时约束。
+交接 API 不向 Sink Connector 暴露 Runtime 内部的 `Work`。Runtime 把每个 terminal output 包装为：
+
+```go
+type SinkItem[T any] struct {
+    Record Record[T]
+    // private Runtime identity
+}
+```
+
+Connector 接收该 work 产生的完整 `[]SinkItem[T]`；`T` 必须与 Sink 声明的输入类型一致，并由
+Go 泛型在组装 Pipeline 时约束。
 
 Connector 使用 `item.Record` 转换目标系统需要的请求，并让原 `SinkItem[T]` 跟随该请求直到 callback，再通过 reporter 原样报告对应 item 的结果。Connector 不解释不透明身份、不维护 records index，也不依赖业务值相等性；因此内容相同的多条 Record 仍可被 Runtime 准确区分。目标系统自己的结构应使用 `KafkaRequest`、`PostgresRow` 等具体名称，避免与 `SinkItem` 混淆。
 
-attempt、generation、Source position、completion 状态和调度信息仍由 Runtime 保存。原子接管方法采用每次交接传入绑定式结果报告器的方案，当前拟定 API 为：
+attempt、generation、Source position、completion 状态和调度信息仍由 Runtime 保存。最终公开
+边界采用每次交接传入绑定式结果报告器：
 
 ```go
 type SinkContext interface {
@@ -40,6 +51,14 @@ type SinkContext interface {
 type SinkCapacityNotifier interface {
     NotifyAvailable()
 }
+
+type SinkAcceptStatus uint8
+
+const (
+    SinkAcceptStatusInvalid SinkAcceptStatus = iota
+    SinkAccepted
+    SinkBackpressured
+)
 
 type Sink[T any] interface {
     Open(runtime SinkContext) error
@@ -56,7 +75,14 @@ type Sink[T any] interface {
 
 Runtime 创建 `SinkContext` 并对每个 Sink 实例调用一次 `Open`；只有 Open 成功后才启动 Sink Coordinator、Pipeline Worker 和 Source admission。运行期仅 Sink Coordinator 调用 `Accept`。Runtime 最多调用一次 `Close`，Open 失败时不开放数据入口，并按逆序清理已经打开的其他组件。
 
-`LifecycleContext()` 返回由 Runtime 控制的 Sink 生命周期 context，Sink 可以保存并用于后台任务和已接管的异步操作，但不能取得其 cancel function。它不同于 `Accept` 的单次接管 context；Accept 返回成功后，异步操作不得因该调用 context 生命周期结束而被取消。`Close(ctx)` 的 context 独立控制有限 drain/资源释放，因此即使生命周期 context 已取消，关闭仍可在单独 deadline 内收尾。`SinkContext` 第一版只提供生命周期 context 和 capacity notifier，未来能力按实际需求扩展。
+`LifecycleContext()` 返回由 Runtime 控制的 Sink 生命周期 context，Sink 可以保存并用于后台任务和已接管的异步操作，但不能取得其 cancel function。它不同于 `Accept` 的单次接管 context；Accept 返回成功后，异步操作不得因该调用 context 生命周期结束而被取消。Runtime 停止新 Accept 后取消 lifecycle context，再调用 `Close(ctx)`；Close context 使用整个 Runtime shutdown 开始时确定的同一个绝对 deadline，前序收尾已经消耗的时间不会为 Sink 重新补足。宿主更早 deadline 优先。`SinkContext` 第一版只提供 lifecycle context 和 capacity notifier，未来能力按实际需求扩展。
+
+`Accept` 的 items 必须非空；零输出 work 不调用 Sink。只有 `SinkAccepted, nil` 表示整组
+items、slice backing array、每个 `SinkItem`、其 Record 及可达引用数据的 ownership 转给 Sink，
+Runtime 此后不再读取、修改或复用。`SinkBackpressured, nil` 和任何 non-nil error 都表示一个
+item 也未接管，Sink 不得保存 items、reporter 或其中引用；error 存在时 status 被忽略。
+accepted 与 error 不能同时返回，nil error 配 invalid/未知 status 是 Connector contract error。
+context 取消与返回竞态以 Accept 的原子线性化结果为准。
 
 `SinkResultReporter` 已经绑定当前内部 work，异步 Sink 可以保存它并在外部 callback 中报告完成事实，不需要取得或保存 work ID。它与 Collector 的调用期生命周期不同：可以在 `Accept` 返回后使用、可以跨 goroutine 调用，并且必须并发安全。
 
@@ -68,7 +94,8 @@ Runtime 创建 `SinkContext` 并对每个 Sink 实例调用一次 `Open`；只�
 type SinkOutcome uint8
 
 const (
-    SinkSucceeded SinkOutcome = iota
+    SinkOutcomeInvalid SinkOutcome = iota
+    SinkSucceeded
     SinkNotApplied
     SinkUnknown
 )
@@ -84,11 +111,15 @@ type SinkResultReporter[T any] interface {
 }
 ```
 
-`Report` 可以调用一次或多次，每次报告任意数量的 item，不要求按原顺序或一次覆盖整个 work。`SinkSucceeded` 必须携带 nil `Err`；`SinkNotApplied` 和 `SinkUnknown` 必须携带非 nil `Err`。如果外部协议只提供结果状态而没有底层异常，Connector 使用 yaspe 提供的标准哨兵错误；因此 Runtime、日志和失败策略始终能得到具体错误值，但 outcome 仍是外部事实的权威分类。
+`Report` 可以调用一次或多次，每次报告任意数量的 item，不要求按原顺序或一次覆盖整个 work。`SinkSucceeded` 必须携带 nil `Err`；`SinkNotApplied` 和 `SinkUnknown` 必须携带非 nil `Err`。invalid/未知 outcome 或错误的 outcome/error 组合是契约错误。如果外部协议只提供结果状态而没有底层异常，Connector 使用 yaspe 提供的标准哨兵错误；因此 Runtime、日志和失败策略始终能得到具体错误值，但 outcome 仍是外部事实的权威分类。
 
 调用 `Report` 时，`results` slice 的所有权转移给 Runtime。调用返回后 Connector 不得读取、修改、缩短、扩展、复用其 backing array，也不得放回对象池。该约定允许 Runtime 将结果直接投递到协调路径而不复制；`SinkItem` 和 `SinkItemResult` 对 Connector 都是逻辑不可变值。违反约定属于 Connector 实现错误，可使用 race detector 和 Connector 契约测试发现。
 
-`Report` 不返回 error，可以由任意 goroutine 调用，并由 Runtime 幂等处理重复、迟到、越界、外来或互相矛盾的 item 结果；这些违规不得在 callback goroutine 中 panic，应被忽略并记录诊断。容量恢复通知属于整个 Sink 的容量状态，不属于某个 work，因此不放入 `SinkResultReporter`。
+`Report` 不返回 error，可以由任意 goroutine 并发调用。相同 item 的相同最终结果重复报告时
+Runtime 忽略并记录有界诊断；active reporter 收到外来 item、矛盾结果、invalid outcome 或错误
+组合时，保持第一个合法结果、投递 Connector contract error 并 FailJob。违规不得在 callback
+goroutine 中 panic。reporter fence 后的任何迟到结果只诊断，不再触发新的 FailJob。容量恢复
+通知属于整个 Sink 的容量状态，不属于某个 work，因此不放入 `SinkResultReporter`。
 
 #### 1.1.1 M1 同步 Memory Sink
 
@@ -165,7 +196,8 @@ Runtime 与 Sink 之间使用有界、通知驱动的交接边界：
 - Sink 对容量的判断和整组责任接管必须是一个原子操作，方法返回 `(SinkAcceptStatus, error)`；
 - `SinkAccepted, nil` 表示 Sink 已取得该 work 全部输出的后续责任；
 - `SinkBackpressured, nil` 是流量控制结果，不是处理失败，此时责任仍在 Runtime，Sink 不得接管部分输出；
-- 任何非 `nil` error 都表示 Sink 一个输出也没有接管，status 被忽略，错误交给 Runtime 的失败策略处理；
+- 任何非 `nil` error 都表示 Sink 一个输出也没有接管，status 被忽略，错误固定触发 FailJob；
+- nil error 配 `SinkAcceptStatusInvalid` 或未知 status 是 Connector contract error并触发 FailJob；
 - Connector 不得在接管部分输出后返回 `SinkBackpressured` 或 error；
 - 不提供先调用 `IsBackpressured`、再提交 work 的分离式协议，避免两步之间容量状态发生变化；
 - Sink 在观察到接管容量恢复或增加时调用 `SinkCapacityNotifier.NotifyAvailable()`，报告调用瞬间存在可用容量；它不负责拉取或选择 work；
@@ -176,6 +208,8 @@ Runtime 与 Sink 之间使用有界、通知驱动的交接边界：
 - Coordinator 在调用 `Accept` 前取得 observed version；若返回 `SinkBackpressured` 时版本已经变化，则立即重试，否则原子等待 version 大于 observed；
 - 版本检查与等待必须避免 check-then-wait 窗口，可使用“版本号 + 每代关闭并替换的 channel”等内部机制；通知允许合并和伪唤醒，但不得丢失；
 - Runtime 在容量变化后重新尝试交接；没有容量或状态变化时不得忙轮询；
+- notifier 从 Open 调用期间开始有效；Runtime 停止新 Accept 后通知不再恢复接管，Close 完成或
+  最终 fence 后迟到 Notify 快速 no-op，不阻塞、panic 或保留完整 Coordinator；
 - 未来可以在 Runtime 内部改用其他调度方式、DAG edge 或跨进程 exchange，只要不改变责任转移、有界背压和完成语义。
 
 ### 1.3 异步 completion
@@ -192,11 +226,17 @@ Sink 的等待 buffer、并发请求、待重试项和 timer 都有上限。Work
 - 每个 work reporter 使用独立、线程安全且有界的 result inbox；`Report` 先验证 item 身份，并只保留每个 item 的第一个有效结果；
 - reporter 可以接收多次增量 Report，但通过 `wakePending` 或等价机制合并唤醒：Coordinator drain 前，同一 reporter 在 wakeup queue 中最多占一个位置；
 - Coordinator 取得 reporter wakeup 后一次 drain 当前 pending results，再允许后续结果安排新的 wakeup；实现必须处理 drain 与新 Report 并发发生的竞态，不得丢失结果；
-- 重复、外来、越界、迟到或互相矛盾的结果在进入 pending 存储前丢弃并记录诊断，不能借此无限扩大队列；
+- 相同合法结果的重复在进入 pending 存储前丢弃并记录诊断；active reporter 的外来、越界、
+  invalid 或互相矛盾结果投递 contract error并 FailJob，但不能覆盖第一个合法结果或扩大队列；
 - 活跃 reporter 数量受全局 in-flight work 上限约束，因此每 reporter 一个 pending wakeup 的总空间也有界；
 - capacity signal 和 result inbox 不强制共享一个普通 channel 或统一事件结构。
 
-reporter 在 `Accept` 返回前处于 pending-accept 状态。提前到达的有效结果可以暂存，但只有 `SinkAccepted, nil` 才激活并允许 Coordinator 应用；若最终返回 Backpressured 或 error，则丢弃提前结果并记录 Connector 违反契约。Sink Coordinator 将同一 work 的 item outcome 聚合成 work-level completion，再交给 Runtime Completion Tracker；后者负责输入终态、permit 释放、position gap 和 safe position，不理解物理 Sink batch。
+reporter 在 `Accept` 返回前处于 pending-accept 状态。提前到达的有效结果可以暂存，但只有
+`SinkAccepted, nil` 才激活并允许 Coordinator 应用；若最终返回 Backpressured 或 error，Runtime
+不得应用这些 completion，并以“未接管却已经发起 effect”的 Connector contract error触发
+FailJob，不能重试 Accept 制造重复效果。Sink Coordinator 将同一 work 的 item outcome 聚合成
+work-level completion，再交给 Runtime Completion Tracker；后者负责输入终态、permit 释放、
+position gap 和 safe position，不理解物理 Sink batch。
 
 当前稳定边界先采用 work 级 reporter。未来提供跨 work 组批的通用异步 Sink 基础设施时，可以在其内部增加类似 Flink `ResultHandler` 的物理请求级 handler，由基础设施负责物理 batch 与多个 work reporter 之间的结果聚合；这不改变 Runtime 与 Sink 的 `Accept` 边界。yaspe 只借鉴绑定式回调和 mailbox 式串行应用，不把“是否重试”混入结果事实。
 
@@ -267,12 +307,16 @@ Runtime 关闭 Sink 时采用以下顺序：
 ```text
 停止新的 Accept
     ↓
+取消 Sink lifecycle context
+    ↓
 Sink 在 Close deadline 内 flush 已接管 buffer
 并等待外部 in-flight 请求
     ↓
 逐 item 形成 Succeeded / NotApplied / Unknown
     ↓
-deadline 到期或 drain 完成后，使 reporter/notifier 失效隔离
+Runtime drain 已进入 reporter inbox 的结果
+    ↓
+在串行协调状态机中使 reporter/notifier 失效隔离
     ↓
 释放 Connector 与 Runtime 协调资源
 ```
@@ -286,16 +330,22 @@ deadline 到期或 drain 完成后，使 reporter/notifier 失效隔离
   `NotApplied`；
 - `Close` 返回的整体 error 只表达关闭过程或资源释放结果，不能替代每个已接管 item 的
   completion 事实，也不能授权静默丢弃 buffer。
+- `Close` 返回 nil 也不能把缺少结果的 item 推断为 success；deadline 到期前 Connector 必须把
+  仍不能确认的已接管 item 报告为 `SinkUnknown`。若返回后仍缺失最终结果，Runtime 形成可识别的
+  missing-result contract error并 FailJob。
 
-`Close` 是有期限的尽力完成，不是无限等待。Connector 必须停止自身能够控制的 admission、
+`Close` 是有期限的尽力完成，不是无限等待。它与 Source、Operator、其他 drain 和 goroutine
+回收共享 Runtime shutdown 开始时确定的同一绝对 deadline；前序步骤消耗时间后不为 Sink 重开
+完整 timeout，宿主更早 deadline 优先。Connector 必须停止自身能够控制的 admission、
 goroutine、timer、内部队列和 callback 注册，并在 deadline 内尽量收敛全部已接管 item；但
 yaspe 不要求 Connector 证明外部客户端在 `Close` 返回后绝不触发迟到 callback。
 
 Runtime 在关闭边界将相关 reporter 和 notifier 标记为失效（fence）。这里的 fence 是结果资格
 隔离，不是终止 callback 或撤销外部效果：对象仍可被迟到 callback 安全调用，但 fence 生效后
 尚未应用的事件只产生有界诊断，不得阻塞、panic、重新终结 work、释放 permit 或推进 safe
-position。fence 与结果应用必须在同一串行协调路径中建立明确顺序，避免 callback 先观察 active、
-再越过并发 fence 提交结果的 check-then-act 竞态。迟到 callback 自身持有的轻量 reporter 可以
+position。fence 与结果进入/应用必须在同一原子或串行边界中建立明确顺序；fence 前成功进入
+inbox 的结果必须应用，避免 callback 先观察 active、再越过并发 fence 提交结果的
+check-then-act 竞态。迟到 callback 自身持有的轻量 reporter 可以
 自然存活，但 Runtime 不为它保留完整 work、Sink Coordinator 或 position tracker。
 
 callback/push Source 采用同一责任划分：Connector 有界停止自身可控的接收与缓存，Runtime 在

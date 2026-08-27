@@ -58,6 +58,14 @@
 - Emit ownership 契约测试覆盖成功后发送方不得复用、失败后仍可复用，以及内置 Operator 不在
   成功 Emit 后修改输出；测试不得宣称能够检测所有违反契约的用户代码；
 - Sink 整组交接不会发生部分责任转移；
+- Accept table test 覆盖 Accepted/Backpressured/error/invalid status、context 取消竞态、items slice
+  ownership 转移，以及零输出不调用 Accept；
+- pending-accept 测试覆盖同步 callback 后 Accepted、Backpressured 和 error；未接管却报告结果
+  必须 FailJob且不得重试 Accept；
+- reporter 契约测试覆盖 invalid outcome、错误 outcome/error 组合、相同重复、矛盾结果、外来
+  item、并发 Report、result slice 转移、每 reporter 单 pending wakeup 和 active/fenced 差异；
+- capacity 测试枚举 Notify 发生在 Accept 前、调用中、Backpressured 返回后和实际 wait 两侧，
+  证明 versioned signal 不丢唤醒、不忙轮询且 fence 后 no-op；
 - 乱序、迟到和重复 callback 不会重复终结或释放 permit；
 - 零输出 work 能直接完成；
 - 多输出 work 只在全部必要 effect 完成后终结；
@@ -71,7 +79,9 @@
 - `RunError` 查询方法返回稳定副本，`errors.Is/As` 可识别 primary、active first/last 和每个
   secondary error，迟到 callback 不得改变已经返回的快照；
 - 关闭测试覆盖已接管 buffer、外部 in-flight、deadline 前部分成功、可证明未生效、结果未知、
-  fence 前后并发 callback，以及 `Close` error 不能替代逐 item completion；
+  missing result、fence 前后并发 callback，以及 `Close` nil/error 都不能替代逐 item completion；
+- shutdown deadline 测试证明 Source、Operator、Sink 和 goroutine 回收共享同一绝对 deadline，
+  前序步骤消耗的时间不会在 Sink Close 时重新补足；
 - Memory Sink 单元测试覆盖整组成功、固定失败计划下的全组拒绝、零输出不调用 Sink、
   group 顺序与扁平视图，以及快照 slice 与内部 slice 结构隔离；
 - Memory Sink 并发测试使用内部 hook/barrier 精确控制接管线性化前后、接管与 Close 竞争、
@@ -222,8 +232,6 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
 
 ### 2.2 M2 实现前必须收敛
 
-- Sink `Open/Accept/Close`、原子接管、reporter、capacity notification 和 callback slice ownership 的最终接口；
-- `SinkSucceeded`、`SinkNotApplied`、`SinkUnknown`、部分成功和迟到/重复 callback 的精确动作；
 - Completion Tracker 的零/多输出、permit 释放、position gap 和 generation fence；
 - Kafka 客户端适配、poll/pause/commit、assignment/revoke/lost 和 commit 失败规则；
 - ClickHouse batch、flush、部分失败、unknown effect 和关闭 deadline；
