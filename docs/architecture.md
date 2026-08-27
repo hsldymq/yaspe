@@ -708,8 +708,11 @@ completion responsibility，但不占 lane；不同 retry work 可在 Parallelis
 
 同一暂停期间继续出现的失败进入统一的 active failure set，而不由每条记录创建不受协调的
 后台重试循环。每个 active failed work 保留第一次错误和有界 attempt 摘要；恢复成功后移除，
-任一 work 耗尽时以触发项为 primary，并快照当时仍活跃的 failure collection。公开错误集合
-形态仍属于后续阶段问题，不在本文预先固定为具体类型或接口。
+任一 work 耗尽时以触发项为 primary，并快照当时仍活跃的 failure collection。所有非正常
+`Run` 统一返回冻结的 `RunError`：明确区分 primary、其他 active work failure 和停止期间的
+secondary errors，同时通过多 error unwrap 支持标准 `errors.Is/As`。公开快照不暴露内部
+WorkID、attempt identity、position 或 generation；完整契约见
+[Failure Design §1.7](designs/0006-failure-panic-and-shutdown.md#17-公开-runerror)。
 
 ## 8. Reliability Plane
 

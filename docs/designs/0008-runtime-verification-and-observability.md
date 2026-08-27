@@ -1,7 +1,7 @@
 # 0008：Runtime 验证与可观测性
 
 状态：M1 Accepted / M2 Discussing
-最后更新：2026-08-26
+最后更新：2026-08-27
 适用阶段：M1–M2
 依赖：全部近期执行契约；见 [Design Map](design-map.md)
 
@@ -57,6 +57,10 @@
   报告立即触发 FailJob，Operator Retry 配置不得捕获或重新提交该 effect；
 - Sink 内部待重试项、timer、请求和 goroutine 保持有界，并响应 lifecycle cancel 与 Close
   deadline；
+- 所有非正常 `Run` 都返回 `*RunError`；测试覆盖单错误、多 active failure、多个 secondary、
+  context 取消先触发、正常处理后 Close 首次失败和并发终止事件的 primary 线性化；
+- `RunError` 查询方法返回稳定副本，`errors.Is/As` 可识别 primary、active first/last 和每个
+  secondary error，迟到 callback 不得改变已经返回的快照；
 - 关闭测试覆盖已接管 buffer、外部 in-flight、deadline 前部分成功、可证明未生效、结果未知、
   fence 前后并发 callback，以及 `Close` error 不能替代逐 item completion；
 - Memory Sink 单元测试覆盖整组成功、固定失败计划下的全组拒绝、零输出不调用 Sink、
@@ -209,7 +213,6 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
 
 ### 2.2 M2 实现前必须收敛
 
-- active work failure collection 与 Sink secondary errors 的最终公开错误 API；
 - 非阻塞 Reader、availability notification、Source control event 和 Connector Open/Close 的最终接口；
 - Sink `Open/Accept/Close`、原子接管、reporter、capacity notification 和 callback slice ownership 的最终接口；
 - `SinkSucceeded`、`SinkNotApplied`、`SinkUnknown`、部分成功和迟到/重复 callback 的精确动作；

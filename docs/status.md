@@ -27,6 +27,7 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | 线性 Job Definition | Accepted | Not Started | Not Applicable | [Job Design](designs/0002-job-definition-and-runtime-instantiation.md) |
 | M1 Stateless Runtime | Accepted | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
 | M2 Operator work Retry | Accepted | Not Started | Not Applicable | [Failure Design §1](designs/0006-failure-panic-and-shutdown.md#1-失败暂停与恢复) |
+| 统一 RunError 与多错误因果 | Accepted | Not Started | Not Applicable | [Failure Design §1.7](designs/0006-failure-panic-and-shutdown.md#17-公开-runerror) |
 | M2 Position / Completion | Position/identity/outcome Accepted; tracker details Discussing | Not Started | Not Applicable | [Position Design](designs/0007-position-and-kafka-rebalance.md) · [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | 异步 Sink 协议 | Completion/Retry boundary Accepted; API details Discussing | Not Started | Not Applicable | [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | Kafka Consumer Group / Rebalance | Accepted | Not Started | Not Applicable | [ADR-0002](decisions/0002-use-kafka-consumer-group-for-external-coordination.md) |
@@ -58,6 +59,10 @@ tracker、Kafka 或 ClickHouse 实现。
 
 ## 最近接受的决定
 
+- 所有非正常 `Runtime.Run` 统一返回冻结的 `*RunError`，明确区分首个因果 primary、停止时其他
+  Operator Retry work 的 active failure snapshots 和停止期间的 secondary errors；通过
+  `Unwrap() []error` 支持 `errors.Is/As`，但不公开内部 work identity，详见
+  [Failure Design §1.7](designs/0006-failure-panic-and-shutdown.md#17-公开-runerror)；
 - M2 Runtime 不提供 Sink effect Retry，也不解析 Sink error 或重新提交 item；Sink 接管后在内部
   决定是否 Retry，只报告最终 `Succeeded/NotApplied/Unknown`。首个最终失败立即 FailJob，其他
   已接管 item 在统一 deadline 内有限收敛；Operator Work Failure Policy 不适用于 Sink、Source
@@ -143,13 +148,13 @@ tracker、Kafka 或 ClickHouse 实现。
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
 
-1. active work failure collection 与 Sink secondary errors 的最终公开错误 API；
-2. M2 Source/Sink 最终接口、Completion Tracker、Kafka/ClickHouse Connector、指标、故障注入和
+1. M2 Source Reader、availability/control event 与 Connector Open/Close 最终接口；
+2. M2 Sink 最终接口、Completion Tracker、Kafka/ClickHouse Connector、指标、故障注入和
    交付保证审核。
 
 ## 当前唯一下一步
 
-讨论并接受 active work failure collection 与 Sink secondary errors 的最终公开错误 API。
+讨论并接受 M2 Source Reader、availability/control event 与 Connector Open/Close 最终接口。
 
 ## 最近验证
 

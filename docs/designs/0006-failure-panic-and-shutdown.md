@@ -1,6 +1,6 @@
 # 0006：Failure、Panic 与 Shutdown
 
-状态：Accepted（M1 FailJob、M2 Operator work Retry 与 Sink 最终失败边界已定；错误公开 API 待定）
+状态：Accepted
 最后更新：2026-08-27
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Sink Handoff](0005-sink-handoff-and-completion.md)
@@ -145,6 +145,60 @@ trigger；随后从同一或其他已接管 work 到达的最终失败作为 sec
 这条固定 FailJob 路径不受 Job 的 Operator Work Failure Policy 影响。未来若引入 checkpoint
 驱动的自动 Run/region 恢复或通用异步 Sink 基础设施，必须另行设计恢复单位、重复边界和状态
 恢复协议；M2 不把这些能力伪装成当前 work Retry。
+
+### 1.7 公开 RunError
+
+`Runtime.Run` 的所有非正常结束统一返回 `*RunError`，不根据底层错误数量在原始 error 与聚合
+error 之间切换。Operator 失败、Sink 最终失败、Source read error、startup/Open error、用户或
+内部 panic、宿主 context 取消、shutdown timeout 和 Close error 都遵守这一入口；正常有界
+Source 完成返回 nil。`Build` 等定义期校验不属于 Run，仍直接返回其配置错误。
+
+`RunError` 是 `Run` 返回前冻结的不可变快照，概念接口为：
+
+```go
+type RunError struct {
+    // fields are private
+}
+
+func (e *RunError) Error() string
+func (e *RunError) Unwrap() []error
+func (e *RunError) Primary() error
+func (e *RunError) ActiveFailures() []WorkFailure
+func (e *RunError) Secondary() []error
+
+type WorkFailure struct {
+    // fields are private
+}
+
+func (f WorkFailure) FirstError() error
+func (f WorkFailure) LastError() error
+func (f WorkFailure) Attempts() int
+func (f WorkFailure) Elapsed() time.Duration
+```
+
+`Primary()` 恰好返回一个非 nil error，表示第一个使 Run 开始停止或最终不能成功返回的原因：
+
+- 首个触发 FailJob 的 Operator、Sink、Source 或 Runtime error 成为 primary；
+- 宿主取消若先触发停止，`context.Canceled` 或 `context.DeadlineExceeded` 成为 primary；
+- 业务处理正常完成后，首个使 Run 失败的 Close error 或 shutdown timeout 成为 primary；
+- 多个终止事件并发到达时，以 Runtime 串行协调状态机接受的第一个事件为准；
+- 停止开始后出现的更严重错误也不得按严重程度改写已经成立的 primary。
+
+`ActiveFailures()` 只保存停止线性化时仍处于 Operator Retry 的其他 work，不重复包含已经成为
+primary trigger 的 work。每项只公开首次错误、最后错误、attempt 数和 elapsed time；不公开
+`WorkID`、attempt identity、Source position 或 generation，因为调用方不能用这些内部身份重新
+提交、确认或跨 Run 关联 work。返回 slice 是副本，调用方不能修改冻结快照。
+
+`Secondary()` 保存停止开始后形成的其他错误，例如其余 Sink item 的最终失败、Close error、
+shutdown timeout 或 internal panic。返回 slice 同样是副本。primary、active failure 与 secondary
+三类不得混为一个无角色集合，因为它们分别表达停止原因、停止前已经存在的并发故障和停止过程
+中的附加故障。
+
+`Unwrap() []error` 返回新 slice，使标准 `errors.Is/As` 可以遍历 primary、每个 active failure
+的 first/last error 和全部 secondary error；nil 不进入结果，同一 `WorkFailure` 的 first 与 last
+是同一 error 时只放一次。unwrap 顺序不表达 primary，调用方必须通过 `Primary()` 查询因果角色。
+`Error()` 只格式化 primary 与 active/secondary 数量摘要，不拼接所有底层错误，避免并发失败使
+错误字符串无界膨胀。迟到 callback 在 `RunError` 冻结后只能命中失效 fence，不能修改快照。
 
 ## 2. FailJob、取消与关闭
 
