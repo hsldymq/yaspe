@@ -1,7 +1,7 @@
 # 0003：Source Reader、Admission 与 Memory Source
 
 状态：Accepted
-最后更新：2026-08-26
+最后更新：2026-08-27
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [ADR-0001](../decisions/0001-runtime-controlled-source-ingestion.md)
 
@@ -20,6 +20,31 @@ yaspe 不要求所有外部系统采用统一的物理 pull、push、callback �
 
 统一的是 Connector 面向 Runtime 的有界责任交接，不是外部系统的物理读取方式。业务 Operator 不感知 Source 类型、Kafka poll API、partition consumer 或 callback 对象。
 
+#### 1.1.1 Source 生命周期
+
+最终 Source 与 Runtime-facing Reader 接口为：
+
+```go
+type Source[T any] interface {
+    Reader[T]
+    Open(SourceContext) error
+    Close(context.Context) error
+}
+
+type SourceContext interface {
+    LifecycleContext() context.Context
+    ControlReporter() SourceControlReporter
+}
+```
+
+每次 Run 通过 Factory 创建一个新 Source。Runtime 最多调用一次 `Open`，成功前不调用
+`TryRead`；`Open` 可以启动 Connector 自己的 I/O、session 或 callback goroutine。
+`LifecycleContext` 可由 Source 保存但 cancel function 只归 Runtime。停止时 Runtime 先停止
+admission、取消 lifecycle context，再以独立 shutdown-deadline context 调用一次 `Close`。
+Runtime 只 Close 成功 Open 的 Source；Open 在部分初始化后失败时由 Source 自行清理半成品。
+Close 开始后不再调用 TryRead，Close 不伪装成正常 finished，也不提交不安全 position。通用
+Source 不要求 Close 幂等，M1 Memory Source 保留其已接受的幂等保证。
+
 ### 1.2 非阻塞 Reader
 
 M1/M2 阶段，Runtime 面向非阻塞 Reader。Reader 只返回：
@@ -33,9 +58,7 @@ Runtime 的 Reader 调用不等待外部阻塞 I/O。阻塞读取、批量 poll�
 
 非阻塞 Reader 是阶段实现选择，不代表外部系统必须物理 pull。callback Source 可以把推送结果放入 Connector 自身有界缓存，再由 Reader 非阻塞取走。
 
-M1 Reader 的读取边界在语义上返回 `ReadResult[T], error`。下列代码只是帮助实现和
-讨论的参考形状，不是最终定稿的公开 Go API；方法名、类型名、通知载体和可见性在
-实现阶段商议，但不得改变本节定义的结果、错误和生命周期语义：
+M1/M2 Reader 的最终读取边界为：
 
 ```go
 type Reader[T any] interface {
@@ -44,8 +67,9 @@ type Reader[T any] interface {
 }
 
 type ReadResult[T any] struct {
-	State ReadState
-	Value T
+	State      ReadState
+	Value      T
+	Positioned *PositionedRead
 }
 
 const (
@@ -55,6 +79,10 @@ const (
 	ReadFinished
 )
 ```
+
+`TryRead` 必须立即返回且不接收 context；阻塞等待只发生在 availability、Connector 内部 I/O
+和生命周期边界。公开 struct 允许 Connector 直接构造结果，Runtime 仍必须验证 state 和字段
+组合。`Positioned` 的契约见 §1.6.1。
 
 `ReadResult` 只表达正常读取状态，`error` 表达读取失败：
 
@@ -87,8 +115,9 @@ Reader 使用可等待的可用性通知避免忙轮询。通知只是提示；R
 - 通知不依赖 Runtime 先观察到 `unavailable`，Connector 不需要判断当前是否存在等待者；
 - Connector 必须先在同步保护下发布新的 Reader 状态，再发送通知；先通知后发布状态
   可能使 Runtime 醒来后仍读不到数据，并随后错过真正的状态变化；
-- M1 的参考实现可使用每个 Reader 一个长期存在、容量为 1 的 notification channel。发送时执行
-  non-blocking send；channel 已满表示已有一个足以触发重新检查的未消费通知；
+- `Available()` 在 Reader 生命周期内始终返回同一个容量为 1、receive-only 且永不关闭的
+  notification channel。Connector 发送时执行 non-blocking send；channel 已满表示已有一个
+  足以触发重新检查的未消费通知；
 - 通知允许合并、重复和过期，不预留记录也不证明当前一定可读；非阻塞 Reader 的下一次
   原子结果才是状态事实的权威；
 - 对于单 admission loop，在新状态发布后，必须始终满足二选一：Runtime 的下一次读取
@@ -96,6 +125,10 @@ Reader 使用可等待的可用性通知避免忙轮询。通知只是提示；R
 
 Runtime 取得 permit 后读到 `unavailable` 时立即释放 permit，然后等待通知；醒来后
 重新竞争 permit 并重新读取。它不得因为收到一次通知就认定已有记录。
+
+finished、failure 和 close 都先发布状态再尝试发送一次通知，不通过关闭 channel 表达终态。
+永不关闭避免重复 Close、迟到 producer 或通知 goroutine发生 send-on-closed-channel panic；
+Runtime 等待 notification 时同时监听 lifecycle cancellation。
 
 业务数据与以下控制事件分离：
 
@@ -106,6 +139,61 @@ Runtime 取得 permit 后读到 `unavailable` 时立即释放 permit，然后等
 - host cancellation。
 
 使读取资格失效的控制事件优先于新数据交接。Runtime 一旦知道 ownership 已失效，不得再接受该 generation 的记录。
+
+#### 1.3.1 Split control 边界
+
+动态 split ownership 使用独立于 Reader 和 availability 的控制边界。`SplitID` 是当前 Source
+instance 内唯一、非空、可比较和可诊断的 string；Runtime 只比较，不解析内容：
+
+```go
+type SplitID string
+
+type SourceControlReporter interface {
+    Assign(context.Context, []SplitID) error
+    BeginRevoke(context.Context, []SplitID) (RevokeHandle, error)
+    Lost(context.Context, []SplitID) error
+}
+
+type RevokeHandle interface {
+    Positions() []SplitPosition
+    Complete(commitErr error) error
+}
+```
+
+不支持动态 split 的 Source 可以完全不调用 reporter。每次 control slice 必须非空，不能包含
+空 ID 或重复项；Runtime 在改变状态前验证整批并复制 IDs。Connector 必须串行发起 control
+calls，Runtime reporter 并发安全并拒绝非法重叠。状态机为：
+
+```text
+unowned --Assign--> owned(new Runtime generation)
+owned  --BeginRevoke--> revoking --Complete/deadline--> unowned
+owned/revoking --Lost--> immediately fenced --> unowned
+```
+
+Assign 已 owned、Revoke 未 owned、Lost 未 owned以及其他非法转换都是可识别的 control protocol
+error并触发 FailJob；Runtime 不悄悄重置 generation。cooperative rebalance 只报告实际变化的
+split，retained split 不进入调用。generation 只由 Runtime 创建，Connector 和 Reader 都不能
+指定。
+
+`BeginRevoke` 先暂停整个 Source admission，对目标 splits 有限 drain 并冻结最终 safe
+positions，再返回 handle；目标 generation 此时处于 revoking 且不再产生新可提交进度。
+Connector 在自己的 control/callback goroutine 中提交 `Positions()` 返回的副本，之后恰好调用
+一次 `Complete`。nil 表示外部 commit 成功；非 nil 表示失败，Runtime 不更新 committed
+frontier、fence generation 并 FailJob。重复 Complete 返回 completed-handle error。原 context
+到期仍未 Complete 时 Runtime 自动 fence 并使 handle 失效；迟到 Complete 不得更新 position。
+Lost 不 drain、不返回 handle且禁止旧 position commit。
+
+Reporter 从 `Open(SourceContext)` 调用期间即有效，以支持同步初始 assignment。shutdown 后拒绝
+新 Assign；有效 ownership 的 BeginRevoke 合并到现有 shutdown drain并使用所有 deadline 中
+最早者，Lost 仍可立即 fence。Open 失败、Close 完成、最终 deadline fence 或 internal panic
+禁止 position progress 后，reporter 失效；迟到调用快速返回 `ErrSourceControlClosed`，不
+阻塞、panic、创建 goroutine或修改 Runtime 状态。
+
+Connector 必须先改变本地读取资格，再报告 control event：Assign 返回后才能使 split
+readable；revoke/lost 时先原子标记目标 split non-readable，停止扩大预取，再调用 Runtime。
+在该本地线性化点前已经 ready 的记录仍须由 Runtime 绑定和追踪，之后不得再交付目标 split。
+Lost 同时丢弃尚未交接缓存；revoke 缓存在决议后丢弃，retained 缓存保持但在全局 admission
+暂停期间不交付。
 
 ### 1.4 Source admission 与所有权
 
@@ -197,7 +285,7 @@ Source Connector 从外部客户端取得原始数据后，由配置的 deserial
 
 Deserializer 只产生 `T`。完成正式交接前，Connector 在自身有界缓冲中持有该值；Runtime
 取得 in-flight permit 后，通过前述非阻塞 Reader 取走 `T`，并统一创建 `Record[T]`、内部
-Envelope 和 Work。具体 Reader 接口与方法名留待 Source API 实现时确定。第一版
+Envelope 和 Work。第一版
 `Record[T]` 仍只有 `Value T`，不增加通用 metadata 容器。
 
 M2 positioned Reader 的 ready 结果还携带 Connector 定义的不透明 split/position 信息；
@@ -215,6 +303,36 @@ metadata 永远只存在于 Runtime Envelope，不进入 `Record[T]` 或业务�
 Event time 不是所有 Source 都存在，也不能仅凭 Kafka timestamp 推断为业务事件时间。
 第一版不把 event time 加入 `Record[T]`；只有在 window、watermark、timer 等真实需求出现，
 并同时定义产生、传播和变换语义后，才重新评估是否增加可选的通用 event-time 字段。
+
+#### 1.6.1 Positioned ready 与 position commit
+
+`ReadResult.Positioned == nil` 表示 unpositioned ready；positioned ready 使用：
+
+```go
+type PositionedRead struct {
+    Split    SplitID
+    Position any
+}
+
+type SplitPosition struct {
+    Split    SplitID
+    Position any
+}
+
+type PositionCommitter interface {
+    CommitPositions(context.Context, []SplitPosition) error
+}
+```
+
+只有 `ReadReady` 可以携带 Positioned，且 Split 非空、Position 非 nil。Position 由 Connector
+定义，Runtime 不解析、比较或序列化，只保存并在 safe frontier 前进时原样交回；Connector 将
+其视为不可变值。ready Split 必须处于当前 owned generation，同一 split 必须按恢复顺序交付。
+
+会返回 positioned ready 的 Source 必须实现 `PositionCommitter`，实现该接口的 Source 也不得
+混合返回 unpositioned ready；Runtime 在启动时识别 capability，并把违反组合视为契约错误。
+`CommitPositions` 的 nil 返回是外部持久化成功，不只是进入 Connector 队列；每批同一 split
+最多一个 position，Runtime 可以合并多次 frontier 前进。正常提交频率、Kafka client 适配与
+commit failure 策略留给 Kafka Connector Design，不改变这一公共边界。
 
 ### 1.7 M1 Memory Source
 
@@ -271,8 +389,8 @@ loop 和 Reader 等待，再执行 Close。Close 幂等、不伪装成正常 fin
 - 拒绝新提交和读取，唤醒所有容量与可用性等待者；
 - 丢弃尚未交接的 Source-owned 缓存，不影响已转给 Runtime 的 work；
 - 不等待 Operator、Sink 或整个 Job，也不覆盖正常停止或 FailJob 的主根因；
-- Memory Source 自身没有需要异步 drain 的外部资源，因此 Close 应同步且快速。通用
-  Connector 的最终 Close 签名留待 Source API 实现审核。
+- Memory Source 自身没有需要异步 drain 的外部资源，因此 Close 应同步且快速；通用
+  Connector 使用已经接受的 `Close(context.Context) error` 并受统一 shutdown deadline 限制。
 
 提交、Finish、Fail、Reader 状态转换和 Close 在同一状态机上线性化。并发操作不承诺
 固定调度顺序，但任何返回成功的 ownership 或生命周期变化都必须已生效。具体终态规则为：

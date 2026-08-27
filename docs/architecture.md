@@ -124,7 +124,7 @@ Build 只接受恰好一个 Source、零个或多个 Operator Transformation、�
 完成 Runtime 所需的异构存储；类型断言失败属于引擎不变量缺陷。
 
 Job 保存可重复、可并发创建运行实例的 Source/Operator/Sink Factory；Connector Builder
-负责先冻结配置，Factory `Create()` 只构造未打开实例，外部初始化放在 `Open(ctx)`。一次
+负责先冻结配置，Factory `Create()` 只构造未打开实例，外部初始化放在组件的 `Open(...)`。一次
 Run 创建一个 Source、每条 lane 一套 Operator Chain 和一个共享 Sink。Operator 可选择实现
 独立的 `OperatorLifecycle`；启动按 Sink、Operator、Source 顺序 Open，失败或停止时逆序
 清理。Job 可被不同 Runtime 重复并发执行，Runtime 本身是一次性执行容器。
@@ -458,30 +458,35 @@ split assignment/revoke、ownership 变化和宿主取消不伪装成业务 Reco
 在没有业务数据时也能及时唤醒 Runtime。会使读取资格失效的控制事件优先于
 新的数据交接；一旦 Runtime 已知当前 ownership 失效，就不得再接受该 ownership 的记录。
 
-这些条款固定 Source 驱动语义，不预先固定 Go 方法名、通知载体或内部缓冲实现。
-
-M1 已固定非阻塞读取在语义上返回 `ReadResult[T], error`；Design 中的 `TryRead` 和
-`Available` 只是参考名称，容量为 1 的 channel 也只是参考通知实现，不是对最终公开
-Go API 或通知载体的定稿。任何最终实现都必须保持不丢失唤醒的语义。`ReadResult` 的
-正常状态为 ready、unavailable 和 finished，零值/unknown state 通过
+Source 最终组合 `Reader[T]`、`Open(SourceContext)` 和 `Close(context.Context)`。Reader 使用
+非阻塞 `TryRead() (ReadResult[T], error)` 与生命周期内稳定、容量为 1 且永不关闭的
+`Available()` channel。Connector 先发布状态再执行可合并的 non-blocking notification；
+`ReadResult` 的正常状态为 ready、unavailable 和 finished，零值/unknown state 通过
 `InvalidReadResultError` 进入 Job 级 FailJob 路径；读取 error 与正常状态分开返回。正常结束先
 drain Connector 缓存再呈现永久 finished，读取失败则优先于尚未交接的缓存数据。
 完整结果和错误契约见 [Source Design §1.2](designs/0003-source-reader-and-admission.md#12-非阻塞-reader)。
+
+动态 split ownership 通过 `SourceContext` 注入的 `SourceControlReporter` 独立报告，不与业务
+Record 或 availability 混合。M2 使用显式 Assign、两阶段 BeginRevoke/RevokeHandle 和 Lost；
+Connector 在自己的 control callback context 中提交 revoke 冻结的 safe positions，再完成
+handle。Runtime 创建 generation并隔离迟到 Complete。positioned ready 携带当前 Source
+instance 内唯一的 string SplitID 和不透明 position；实现 `PositionCommitter` 的 Source 承担
+外部持久化，Runtime 不解析 position。完整接口、并发顺序和 reporter fence 见
+[Source Design §1.3.1](designs/0003-source-reader-and-admission.md#131-split-control-边界)。
 
 M1 Memory Source 是 Runtime 参考实现、确定性测试设施、benchmark 输入和本地示例数据源，
 不是生产级队列。它使用动态有界缓冲并分离 Runtime-facing Source 与 producer-facing
 Controller；Controller 提供可取消的背压提交、正常结束和失败注入语义，Close 仍由
 Runtime 管理。正常结束 drain 已缓存记录，失败优先于尚未交接缓存；所有并发操作
 在同一生命周期状态机上线性化。完整定位、ownership、终态竞争和测试契约见
-[Source Design §1.7](designs/0003-source-reader-and-admission.md#17-m1-memory-source)。方法名和具体公开
-Go API 仍留待实现阶段商议。
+[Source Design §1.7](designs/0003-source-reader-and-admission.md#17-m1-memory-source)。
 
 Source 数据进入业务类型的边界固定为：Connector 读取外部原始数据，配置的
 deserializer/parser 产生业务值 `T`，并在正式交接前由 Connector 有界持有。Runtime 取得
 in-flight permit 后通过非阻塞 Reader 取走 `T`，再统一创建 `Record[T]`、内部 Envelope 和
 Work；Source Connector 与 deserializer 都不创建或解释 Runtime Envelope。split、position、
 ownership generation、work identity、attempt、completion 和 permit 等正确性 metadata
-永远留在 Runtime 内部。具体 Reader 接口与方法名留待 Source API 设计确定。
+永远留在 Runtime 内部。
 
 ### 7.6 Sink
 

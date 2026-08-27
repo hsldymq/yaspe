@@ -24,6 +24,15 @@
   check-then-wait 交错。
 - Memory Source 测试覆盖满缓冲 Submit 的背压和取消、Submit/Finish 线性化、finishing drain、
   Fail 优先级、首根因保留、Close 唤醒等待者与 Source-owned 缓存丢弃；
+- Reader API 测试覆盖稳定且永不关闭的容量 1 Available channel、先发布状态后通知、终态唤醒、
+  stale/coalesced notification，以及 Open 内同步 assignment 与 Close 后迟到 control call；
+- split control 测试覆盖 Assign/BeginRevoke/Lost 的合法状态机、批量全验证、空/重复/未知 split、
+  generation 只由 Runtime 创建、revoke handle 恰好一次 Complete、deadline 自动 fence 和迟到
+  Complete 不提交 position；
+- 用 barrier 交错 Connector 本地 readable 线性化、TryRead ready 返回与 assign/revoke/lost，证明
+  ready 后必先绑定、control 后不再交付旧 ownership，并且 lost 丢弃未交接缓存；
+- positioned Source capability 测试覆盖 positioned/unpositioned 混用、空 Split/nil Position、
+  未实现 PositionCommitter 却返回 positioned ready，以及 CommitPositions 必须同步确认持久化；
 - 有限 Memory Source 的端到端测试必须证明 `Finish` 返回不会提前终止 Runtime，`Run` 只在
   已缓存和已接纳 work 及 Sink 都按契约收敛后返回 `nil`。
 - admission 竞态测试必须把 context 取消分别注入到 reservation 之前、预留之后/读取之前、
@@ -213,7 +222,6 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
 
 ### 2.2 M2 实现前必须收敛
 
-- 非阻塞 Reader、availability notification、Source control event 和 Connector Open/Close 的最终接口；
 - Sink `Open/Accept/Close`、原子接管、reporter、capacity notification 和 callback slice ownership 的最终接口；
 - `SinkSucceeded`、`SinkNotApplied`、`SinkUnknown`、部分成功和迟到/重复 callback 的精确动作；
 - Completion Tracker 的零/多输出、permit 释放、position gap 和 generation fence；

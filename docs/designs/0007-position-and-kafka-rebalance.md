@@ -72,8 +72,9 @@ attempt 的迟到 Emit、完成或错误不得影响新 attempt。Completion 是
 它逻辑绑定 Work、attempt 和该 attempt 内的输出 ordinal，重复或迟到 callback 不得重复终结
 Work。
 
-具体 Go 类型名、泛型签名和私有存储布局留到 Reader、control event 与 Connector 生命周期
-接口联合审核时确定，但不得改变上述可见性、scope 和 identity 契约。
+Reader、position capability 与 control event 的公开边界已经在
+[Source Design](0003-source-reader-and-admission.md) 接受；Envelope、WorkID、generation 引用和
+私有存储布局仍由受约束实现原型细化，不得改变上述可见性、scope 和 identity 契约。
 
 ### 1.4 generation fence
 
@@ -108,6 +109,11 @@ Sink 未明确成功时不能推进 position。结果未知时，为避免丢失
 
 ## 2. Kafka Rebalance
 
+Kafka Connector 通过 Source Design 接受的 `Assign`、`BeginRevoke`、`RevokeHandle` 和 `Lost`
+把 Consumer Group ownership 变化同步交给 Runtime。它必须先使目标 split 在 Connector 本地
+不可读，再开始 revoke/lost；Assign 返回后才可使新 split 数据 ready。控制调用不与业务
+Record 或 availability notification 混用。
+
 Revoke 开始后，第一版暂停该 Kafka Source 所有 split 的新业务 admission，让现有资源优先
 用于收尾；Kafka heartbeat、session 和必要的 poll/control 处理必须继续运行。暂停全局
 admission 不等于撤销所有 ownership：只有 Kafka 报告的 revoked split 进入 drain、commit、
@@ -127,8 +133,14 @@ effect 的较大 position。在 ownership 失效前，Runtime 允许：
 
 默认 `RevokeDrainTimeout` 为 30 秒。实际收尾 deadline 取用户配置和 Kafka Connector 当前
 可用 rebalance deadline 中较早者，并为最终 safe position commit、控制回调返回和协议推进
-预留安全时间；收尾不得无限阻塞 rebalance。期限到期时取消仍未交给 Sink 的 work，Sink-owned
-unknown 不得标记成功，只提交当时连续的 safe position。
+预留安全时间；收尾不得无限阻塞 rebalance。`BeginRevoke` 返回时冻结目标 split 的最终 safe
+positions，Connector 在自己的 rebalance callback context 中提交这些 position，再通过 handle
+的 `Complete` 报告 commit 结果并使 Runtime fence generation。这样不要求 Runtime 在 Connector
+正阻塞于 revoke call 时从另一 goroutine 反向调用 Kafka client。
+
+期限到期时取消仍未交给 Sink 的 work，Sink-owned unknown 不得标记成功；尚未完成 handle 的
+generation 自动 fence，迟到 Complete 不得更新 committed frontier。只有 deadline 前确认成功的
+commit 才成为外部恢复位置。
 
 Ownership 失效后：
 

@@ -1,7 +1,7 @@
 # 0002：Job Definition 与 Runtime 实例化
 
 状态：Accepted
-最后更新：2026-08-26
+最后更新：2026-08-27
 适用阶段：M1+
 依赖：[核心执行模型](0001-core-execution-model.md)
 
@@ -93,7 +93,8 @@ Connector 可以提供自己的 Builder 收集 brokers、topic、路径或批量
 
 Factory `Create()` 不接收 context，只允许快速创建尚未打开的实例。它不得执行阻塞 I/O、
 启动 goroutine，或取得必须通过 `Close` 释放的外部资源；真正可能阻塞、失败和需要取消的
-初始化属于实例的 `Open(ctx)`。Factory panic 在 Runtime 启动边界转为带 stack 的启动错误，
+初始化属于实例的 `Open(...)`。Source 与 Sink 分别接收窄的 `SourceContext` 和 `SinkContext`，
+Operator lifecycle 接收 `context.Context`；Factory panic 在 Runtime 启动边界转为带 stack 的启动错误，
 不穿透宿主，也不进入 record Failure Policy。
 
 Factory 必须支持多次且可能并发的 `Create`，每次返回独立运行实例。Func 形式捕获的闭包也
@@ -158,6 +159,8 @@ Close。原启动错误保持 primary，回滚 Close error 或 panic 作为 seco
 
 Sink 最先 Open、最后 Close；Source 最后 Open，避免下游尚未准备好时产生业务输入。Source、
 Sink 不需要额外初始化时可以立即 Open，其既有 Runtime-owned Close 契约不因此取消。
+Source 的最终生命周期、Reader 与 control reporter 契约见
+[Source Design §1.1.1](0003-source-reader-and-admission.md#111-source-生命周期)。
 
 ## 6. Build 契约
 

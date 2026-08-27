@@ -23,6 +23,7 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | Collector scope-bound context API | Accepted | Implemented | Unit Tested | [Operator Design §1.3](designs/0004-operator-attempt-and-collector.md#13-emit-契约) |
 | Map / Filter / FlatMap | Accepted | Implemented | Unit Tested | [Operator Design §2](designs/0004-operator-attempt-and-collector.md#2-operator-chain-与-work-attempt-边界) |
 | M1 Reader / Memory Source 语义 | Accepted | Not Started | Not Applicable | [Source Design](designs/0003-source-reader-and-admission.md) |
+| M2 Source lifecycle / split control / position commit API | Accepted | Not Started | Not Applicable | [Source Design](designs/0003-source-reader-and-admission.md) |
 | M1 同步 Memory Sink 语义 | Accepted | Not Started | Not Applicable | [Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink) |
 | 线性 Job Definition | Accepted | Not Started | Not Applicable | [Job Design](designs/0002-job-definition-and-runtime-instantiation.md) |
 | M1 Stateless Runtime | Accepted | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
@@ -59,6 +60,11 @@ tracker、Kafka 或 ClickHouse 实现。
 
 ## 最近接受的决定
 
+- Source 最终组合非阻塞 `TryRead`、容量 1 且永不关闭的 `Available` channel、
+  `Open(SourceContext)` 与有限 `Close`；positioned Source 通过可选 `PositionCommitter` 提交不透明
+  split position，动态 ownership 使用 Assign、两阶段 BeginRevoke/RevokeHandle 和 Lost，并对
+  ready/control 竞态与迟到 callback 建立 generation fence，详见
+  [Source Design](designs/0003-source-reader-and-admission.md)；
 - 所有非正常 `Runtime.Run` 统一返回冻结的 `*RunError`，明确区分首个因果 primary、停止时其他
   Operator Retry work 的 active failure snapshots 和停止期间的 secondary errors；通过
   `Unwrap() []error` 支持 `errors.Is/As`，但不公开内部 work identity，详见
@@ -93,8 +99,8 @@ tracker、Kafka 或 ClickHouse 实现。
 - Reader 可用性通知必须消除 `TryRead -> unavailable -> wait` 的丢失唤醒窗口；M1 采用
   先发布状态、后发送可合并通知的契约，并要求可控交错的确定性竞态测试，详见
   [Source Design §1.3](designs/0003-source-reader-and-admission.md#13-可用性通知与控制事件)。
-- M1 Reader 的非阻塞读取在语义上返回 `ReadResult[T], error`，`TryRead` 等只是参考名称；
-  result 只表达 ready/unavailable/finished，error 表达读取失败，invalid state 作为契约错误
+- Reader 的最终非阻塞接口使用 `TryRead() (ReadResult[T], error)` 与容量 1、永不关闭的
+  `Available()` channel；result 只表达 ready/unavailable/finished，error 表达读取失败，invalid state 作为契约错误
   进入 Job 级 failure 路径且不借用 Operator work Retry。正常结束先交付
   已缓存记录，读取失败则优先于尚未交接的缓存，详见
   [Source Design §1.2](designs/0003-source-reader-and-admission.md#12-非阻塞-reader)。
@@ -148,13 +154,14 @@ tracker、Kafka 或 ClickHouse 实现。
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
 
-1. M2 Source Reader、availability/control event 与 Connector Open/Close 最终接口；
-2. M2 Sink 最终接口、Completion Tracker、Kafka/ClickHouse Connector、指标、故障注入和
+1. M2 Sink `Open/Accept/Close`、reporter、capacity notification 与 callback ownership 最终接口；
+2. Completion Tracker、Kafka/ClickHouse Connector、指标、故障注入和
    交付保证审核。
 
 ## 当前唯一下一步
 
-讨论并接受 M2 Source Reader、availability/control event 与 Connector Open/Close 最终接口。
+讨论并接受 M2 Sink `Open/Accept/Close`、reporter、capacity notification 与 callback ownership
+最终接口。
 
 ## 最近验证
 

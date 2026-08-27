@@ -19,6 +19,7 @@
 | D-EXEC-001 | M1/M2 使用并行完整 Pipeline，单 work 内同步执行 Chain | Accepted | M1–M2 | [Core Design §3](../designs/0001-core-execution-model.md#3-近期执行形态) |
 | D-EXEC-002 | 每条 lane 创建独立 Operator 包装实例，用户函数值可以共享 | Accepted | M1+ | [Job Design](../designs/0002-job-definition-and-runtime-instantiation.md) |
 | D-JOB-001 | type-state Job Definition 模型，Build 产生不可变快照 | Accepted | M1+ | [Job Design](../designs/0002-job-definition-and-runtime-instantiation.md) |
+| D-SOURCE-001 | Source 使用非阻塞 Reader、独立 split control 与两阶段 revoke handle | Accepted | M1–M2 | [Source Design](../designs/0003-source-reader-and-admission.md) |
 | D-FAIL-001 | Runtime 不提供 Skip/DiscardRecord；业务错误由用户函数收敛为正常零输出 | Accepted | M1+ | [Failure Design §1.1](../designs/0006-failure-panic-and-shutdown.md#11-错误不直接等于退出) |
 | D-FAIL-002 | 所有非正常 Run 统一返回保留 primary、active 与 secondary 因果的 RunError | Accepted | M1+ | [Failure Design §1.7](../designs/0006-failure-panic-and-shutdown.md#17-公开-runerror) |
 | D-SINK-001 | 一个 work 的 terminal output 向 Sink 整组原子交接 | Accepted | M2+ | [Sink Design §1.1](../designs/0005-sink-handoff-and-completion.md#11-整组责任转移) |
