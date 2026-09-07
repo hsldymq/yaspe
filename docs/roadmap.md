@@ -161,7 +161,7 @@ M11 分布式执行（探索）
 
 - `Parallelism=1` 时结果和失败位置可确定复现；
 - `Parallelism>1` 时不承诺输出顺序，并在 API 中明确表达；
-- 队列满时 Source 停止读取，内存不会随输入无限增长；
+- 队列满时 Source 停止继续扩大读取，记录积压受容量约束；不承诺任意记录大小下的固定内存字节上限；
 - FailJob 能停止新输入并回收所有 Runtime goroutine；
 - Filter、FlatMap 和自定义 Operator 的正常零输出不会终止其他独立记录；
 - Map、Filter、FlatMap 的错误和部分输出语义有完整测试；
@@ -189,10 +189,14 @@ M11 分布式执行（探索）
 - 正常成功（包括零输出）和未解决失败对 position 的不同影响；
 - Kafka Source Connector；
 - 使用 Kafka Consumer Group 协调多 Pod 的 partition ownership；
+- 第一版限定 classic Consumer Group 协议，支持 eager/cooperative；新的 group 协议另行
+  设计和验证，范围见 [Kafka Design §3.7](designs/0007-position-and-kafka-rebalance.md#37-第一版-group-协议范围)；
 - partition assignment、revocation 和 ownership generation；
 - rebalance 时暂停 Source 全部新业务 admission、保持 session/control、对 revoked split 执行有期限的在途任务 drain/cancel 和安全 position 提交；
 - 旧 ownership 完成的任务不得推进当前 position；
 - Kafka poll、heartbeat/session 与 Runtime 背压的协作；
+- Kafka 客户端按 fetch、Connector 缓存按记录的分层预取预算，第一版不新增 yaspe
+  字节/解压限制，保证范围见 [Kafka Design §3.2](designs/0007-position-and-kafka-rebalance.md#32-分层缓存与背压)；
 - Kafka 会话建立/恢复的有限预算与阶段相关错误分类，以及不受业务背压阻塞的 Source
   最终失败报告，契约见 [Kafka Design §3.6](designs/0007-position-and-kafka-rebalance.md#36-会话建立与恢复)；
 - 禁用或约束不理解 Runtime 完成语义的自动 offset 提交；
@@ -221,8 +225,12 @@ M11 分布式执行（探索）
 - 多个实例使用同一 Consumer Group 时，同一 partition 不会被 yaspe 主动重复分配；
 - partition 被 revoke 后，旧 ownership 不会继续推进其 committed position；
 - revoke 总预算包含最终提交预留，drain 截止与 handle 最终失效分别验证；Kafka 默认配置及外部期限约束见 [Kafka Design §3.4](designs/0007-position-and-kafka-rebalance.md#34-kafka-revoke-配置)，started/Sink-owned work 有限收敛，queued work 不启动；
+- 普通提交周期与逻辑提交总预算分别验证，旧普通提交最终失败后不再补交；本地期限
+  不被描述成 broker 的精确剩余时限，客户端版本须核验请求排序、取消与回调；
 - eager 和 cooperative rebalance 都通过 revoked split 集合正确处理，retained split 不重置，lost split 不执行旧 position commit；
 - 队列饱和和 Sink 变慢时，Kafka session 不会因错误的阻塞模型持续发生非预期 rebalance；
+- 部分 poll、跨多次 fetch 填充、满时暂停及在途响应均满足分层计数约束；大消息/压缩
+  批次下记录实际内存表现，不宣称整个 Source 的统一记录数或字节上限；
 - graceful shutdown 会停止新读取，并在期限内处理或明确放弃未完成的在途记录；
 - Kafka rebalance、取消和关闭时不会静默丢弃已确认但未提交的状态；
 - 故障测试覆盖读取后、处理时、Sink 入队后、batch 写入时和 position 提交前后的进程失败；

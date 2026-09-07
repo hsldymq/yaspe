@@ -30,6 +30,7 @@
 | 某项能力具体如何工作、各 Design 如何依赖 | [Design Map](designs/design-map.md) |
 | 当前做到哪里、下一步是什么 | [Current Status](status.md) |
 | 实际已经实现并验证了什么 | 代码和自动化测试 |
+| 客户端原型验证的固定依赖、结果与限制 | [franz-go v1.21.6 验证附件](verification/franz-go-v1.21.6/README.md) |
 | 文档如何维护和接力 | [Documentation Governance](governance.md) |
 
 ## 事实冲突处理

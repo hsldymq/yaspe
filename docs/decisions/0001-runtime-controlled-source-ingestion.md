@@ -1,6 +1,11 @@
 # 0001：由 Runtime 控制 Source 数据进入
 
-状态：Accepted
+状态：Superseded by [ADR-0007](0007-layered-source-prefetch-budgets.md)
+
+替代说明（2026-09-07）：保留 Runtime 控制 admission、Connector 适配物理读取与背压的
+方向，资源保证改为按各层声明的单位计数；Kafka 客户端按 fetch、Connector 按记录限制，
+不再承诺整个 Source 的固定记录数或进程内存字节上限。以下正文保留原决定历史，当前
+契约以 ADR-0007 及其链接的 Design 为准。
 
 日期：2026-08-01
 

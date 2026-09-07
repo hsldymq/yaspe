@@ -1,0 +1,23 @@
+=== RUN   TestPartialPollRetainsFetchBudgetAndPauseResume
+    adapter_test.go:168: one fetch delivered as six polls of two; pause/resume retained remaining records
+--- PASS: TestPartialPollRetainsFetchBudgetAndPauseResume (0.06s)
+=== RUN   TestClassicAndRebalanceWindow
+    adapter_test.go:202: classic JoinGroup observed; revoke waited for AllowRebalance; empty revoke observed
+--- PASS: TestClassicAndRebalanceWindow (0.05s)
+=== RUN   TestInFlightCommitCancellation
+    adapter_test.go:230: commit observed on wire; cancellation ended lone synchronous call with context.Canceled
+--- PASS: TestInFlightCommitCancellation (0.02s)
+=== RUN   TestCommitWaitsForCallbackReturn
+    adapter_test.go:276: context cancellation does not bypass a blocked successful commit callback
+--- PASS: TestCommitWaitsForCallbackReturn (0.03s)
+=== RUN   TestCloseWaitsForRevokeCallback
+    adapter_test.go:300: Close waits for revoke callback; callback must not synchronously Close its own client
+--- PASS: TestCloseWaitsForRevokeCallback (0.05s)
+=== RUN   TestLostThenErrorThenReassignmentWithoutPolling
+    adapter_test.go:355: with fetch paused and no further poll: Lost -> GroupManageError(UnknownMemberID) -> Assigned
+--- PASS: TestLostThenErrorThenReassignmentWithoutPolling (0.37s)
+=== RUN   TestStartupAuthorizationFailureWithoutAnyPoll
+    adapter_test.go:377: startup group authorization error observable through hook without any business poll; Lost set is empty
+--- PASS: TestStartupAuthorizationFailureWithoutAnyPoll (0.00s)
+PASS
+ok  	yaspe-franz-verify	1.594s

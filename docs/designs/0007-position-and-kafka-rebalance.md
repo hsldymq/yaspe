@@ -1,6 +1,6 @@
 # 0007：Position、Ownership 与 Kafka Rebalance
 
-状态：Accepted（含 Kafka 会话恢复与错误分类；§4 的客户端版本适配、资源与期限问题仍待核验或收敛）
+状态：Accepted（主要设计已收敛，固定 v1.21.6 与初始默认值；§4 保留未完成的适配验证）
 最后更新：2026-09-07
 适用阶段：M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Source Reader](0003-source-reader-and-admission.md) · [Sink Handoff](0005-sink-handoff-and-completion.md) · [ADR-0005](../decisions/0005-connector-owned-revoke-budget.md)
@@ -251,9 +251,14 @@ ownership 可能已被其他 Consumer 接管，Connector 必须立即 fence gene
 
 ### 3.1 客户端候选与 poll 登记窗口
 
-第一版以纯 Go 的 franz-go（`kgo`）为首选候选，优先用其能力核验本 Design；这是候选方向的
-接受，不是具体版本、完整兼容性或实现验证已完成。旧业务使用 Sarama 不约束 yaspe 的
-客户端选择；客户端对象保持在 Connector 内，业务 Operator 不感知 kgo 类型。
+第一版固定纯 Go 的 franz-go（`kgo`）**v1.21.6** 为适配基线，源码核验、原型与后续实现
+针对该版本。其模块最低 Go 版本为 1.25，符合 yaspe 的 Go 1.27 基线。版本选择不等于
+完整兼容性或 Connector 实现验证完成；七项已运行的定向验证及限制见 §5。
+旧业务使用 Sarama 不约束 yaspe 的客户端选择；客户端对象保持在 Connector 内，业务
+Operator 不感知 kgo 类型。升级依赖必须复核适配契约，不随 master 变化自动更新基线。
+
+第一版限定 classic Consumer Group 协议，支持 eager/cooperative 分配；新的 consumer group
+协议不在第一版兼容声明内。协议范围与未来扩展条件见 §3.7。
 
 职责分为客户端的网络/session 管理、Connector 的取数与有界缓存、串行 control callback，
 以及 Runtime admission/completion。数据获取可以因容量不足等待，control 路径必须仍可
@@ -284,31 +289,92 @@ ownership 可能已被其他 Consumer 接管，Connector 必须立即 fence gene
 资源核算覆盖完整路径：
 
 ```text
-franz-go 内部 fetch/缓冲 → Connector 记录缓存 → Runtime MaxInFlightWorks
+franz-go 内部：fetch 数量 → Connector 缓存：记录数量 → Runtime：work 数量
 ```
 
 Connector 所有 partitions 共享可配置的记录数预算，包含 poll reservation、已取出但尚未
 交给 Runtime 的记录与转换中的记录，内部保留 partition 顺序。总预算避免 partition 数
 增加时容量按每 partition 固定配额成倍增长；代价是热点 partition 可能占据较多容量，
-第一版不承诺严格公平。具体容量默认值留给 benchmark。
+第一版不承诺严格公平。初始默认值为：
+
+| 配置 | 默认值 | 有效范围 |
+|---|---|---|
+| `MaxConcurrentFetches` | 2 | 可配置，必须为正整数 |
+| Connector 缓冲容量 | 1,024 条记录 | 可配置，必须为正整数 |
+
+两项独立配置，不要求相互匹配，也不要求缓存装得下完整一次 fetch。第一版不开放
+MaxConcurrentFetches 的零值特殊模式或负值无独立上限模式。默认少量并发 fetch 与有限
+记录缓冲用于吸收速度差异，尚未进行性能调优；后续按 workload 校准，不据此承诺吞吐或
+固定内存占用。
 
 容量耗尽时暂停当前 assignment 的 fetch 并停止新 poll；等待容量前已经 AllowRebalance。
 恢复取数须同时满足容量、ownership、revoke 和关闭状态；不能仅因有空位就 resume。
 背压期间新增 assignment 也受同一暂停状态约束，retained 缓存保留，恢复后优先交接已有
 记录。数据暂停不得阻塞 session/control 处理，也不得以 session 维护为由持续扩大预取。
 
-客户端预取单独显式配置 `MaxConcurrentFetches`、`FetchMaxBytes` 等限制。`PollRecords(n)`
-仅限制单次交给 Connector 的数量，不限制客户端所有内部记录。fetch 大小可能被较大批次
-突破，解压及在途响应也要纳入核算；这些配置不能直接证明整个 Source 的严格记录数或
-内存上限。已有 Source 数量有界要求继续有效，完整证明是 §4.2 的实现前开放问题，不把
-客户端内部缓冲排除在 Connector 责任之外。
+第一版对客户端内部按 fetch 数量约束，对 Connector 已取出的数据按记录数量约束，不承诺
+整个 Source 统一的固定记录数或内存字节上限。客户端内部预取仍属 Connector 适配责任，
+但不能将不同计数单位直接相加或把 fetch 个数解释为记录个数。
+
+- 显式使用有限的 `MaxConcurrentFetches`，约束同时在途或在客户端缓冲、尚未被完全
+  poll 取走的 fetch 数量；不采用随 broker 数量无独立配置上限的模式；
+- `PollRecords(n)` 的正数上限不超过当前预留的 Connector 记录容量。一份 fetch 可包含
+  多个 partition、多个批次与多条记录，未取出的部分继续留在客户端，不要求 Connector
+  一次装下完整 fetch；
+- 一份结果被完全取走后，客户端可以继续发起下一次 fetch；fetch 并发上限不是运行期间
+  fetch 总次数上限。较大的 Connector 缓冲可以由多次 fetch 逐渐填充；
+- 记录就绪后即可交给 Runtime，不等待缓存填满。缓冲大小影响背压时机、吞吐和内存
+  占用，不改变 ownership、顺序或完成语义；较小缓冲也不能消除单次大批次的内存峰值；
+- 缓冲满时停止新 poll 并暂停 fetch，已经在途或已缓冲的数据仍按客户端 fetch 数量
+  限制核算，不要求 pause 瞬间撤销已有响应。稳定背压下不得持续新增 fetch 或私有队列
+  来扩大积压，session/control 必须仍可推进。
+
+第一版不新增 yaspe 自己的单条消息、fetch 响应或解压批次字节上限，不实现额外的受限
+解压器，也不以新增 yaspe 大小阈值拒收数据。保留客户端原有 fetch 大小配置、响应读取
+及解压保护机制；“不新增限制”不表示绕过这些保护或支持任意大的消息。客户端确实返回
+读取/解压错误时，仍按已有 Source failure 契约处理，不静默丢弃或无限放宽限制。
+
+`FetchMaxBytes` 等参数是客户端正常 fetch 大小目标，不能作为硬性的整体内存保证；
+`BrokerMaxReadBytes` 等现有保护也不等于解压后的内存上限。压缩展开、记录对象、共享
+底层缓冲及用户转换后的值都会影响驻留内存。内存不足时不能承诺正常工作，降低 fetch
+并发也不能抵消 Connector 过大缓存的全部占用。
+
+选择这一分层计数保证，是为了防止持续背压下无限积累，同时接受大小可变的输入。
+较大的消息/批次可能带来较高内存峰值；对响应和解压字节再加硬上限能够提供更强的输入
+约束，但会引入额外配置、解析路径和大批次拒收语义，第一版暂不采用。原“所有未交接
+预取必须按记录数给出上限”的要求由此替代，理由与旧决定见
+[ADR-0007](../decisions/0007-layered-source-prefetch-budgets.md)。
+
+初始默认值已接受，实际 Connector 实现与其组合仍须通过 §4.2 验证；该验证检查分层计数
+和背压，不再要求证明整个 Source 的固定记录数或字节上限。
 
 ### 3.3 Offset 提交与 revoke 交接
 
 禁用 Kafka 自动提交，只提交 Runtime 确认的连续 safe position。正常运行由 Runtime 按
 可配置周期合并 dirty frontier，没有进度变化不提交；不按每次完成积累提交任务。Kafka
 路径每个 Source 同时最多一个提交请求，可包含多个 partitions；这是对 §1.7 通用的每
-split 单 in-flight 约束的进一步限制。周期默认值、有限 retry/backoff 参数仍待确定。
+split 单 in-flight 约束的进一步限制。初始提交参数如下，名称作为设计表达，代码尚未实现：
+
+| 参数 | 初始值 | 含义 |
+|---|---|---|
+| 普通提交周期 | 默认 3 秒，可配置 | 正常运行中周期检查、合并并提交有变化的 safe position |
+| 单次逻辑提交总超时 | 5 秒 | 包含等待提交资格、请求和本次提交内的重试 |
+| 重试退避 | 初始 100 毫秒，增长至最多 1 秒 | 只在本次剩余总预算内等待和重试 |
+
+普通提交周期不控制读取或业务执行频率，也不保证位置在一个周期内持久化。上次提交
+未结束时只合并最新 safe position，不叠加请求、不积累周期触发任务；一次请求可批量
+提交多个 partitions。周期较短增加提交频率并通常减少故障后已完成但未提交记录的
+重放，周期较长则相反。初始参数是设计选择，尚无 workload 验证。
+
+一次逻辑提交的绝对期限从开始本次提交流程时计算，不在请求重试时重置；已有调用
+context、revoke 或 shutdown 的更早期限优先。退避等待也必须可取消且包含在总预算内，
+不能在 Connector 与客户端之间叠加不受总期限约束的重试。具体客户端 retry 配置映射
+须在 §4.3 核验；超时与退避端点不表示已固定全部私有算法或客户端选项名。
+
+Revoke 最终提交在 drain 后直接进入，不等待普通提交周期。它同时受单次逻辑提交超时
+及 revoke 剩余时间限制，并给 Complete 与 callback 返回留下时间，不能在 drain 后重新
+获得完整的一份独立预算。RevokeCommitReserve 是整个提交及收尾的预留，不保证最终
+网络请求本身总有五秒可用。
 
 Connector 以有期限的同步提交实现 `CommitPositions`；独立等待路径不能阻塞 Runtime
 处理 completion/control。检查请求级与逐 partition 结果，全部确认成功才返回 nil；任何
@@ -325,15 +391,20 @@ Operator Retry。超时是未确认成功，不能描述成确定未生效。第
    不排队形成可在新 ownership 中发出的旧请求；
 2. 已发出的普通提交有限收敛，`BeginRevoke` 同时推进 drain；两条等待路径不持有阻止
    completion/control 的锁，也不相互依赖才能完成；
-3. 只有旧普通提交已结束且 handle 已返回，才在回调中提交 handle 内被 revoked partitions
+3. 只有旧普通提交已确认成功结束且 handle 已返回，才在回调中提交 handle 内被 revoked partitions
    的最终位置，不能在最终提交之后再发出旧普通提交；
 4. 用 `Complete` 报告结果；Job 正常且其他暂停原因消失后，retained partitions 恢复普通
    提交，其尚未提交的最新 safe position 继续保留。
 
 所有等待受同一总 deadline 约束，已有普通提交不得在 revoke 到来后独占原先更长的预算。
-旧提交最终失败按 FailJob 处理；预算耗尽则取消等待并执行 fence，不再发起已无时间完成的
-最终提交。具体取消/串行化实现必须通过 §4.3 的交错审核。取消已发出的请求不能撤销 broker
-可能已处理的请求，迟到结果只能按旧 scope 隔离。
+旧提交超时、取消或最终失败按既有 FailJob/关闭因果规则处理，不再发起后续最终提交或
+补救提交；不能先取消旧请求，再立即换连接提交较新的位置。预算耗尽则取消等待并执行
+fence，不再发起已无时间完成的最终提交。具体取消/串行化实现必须通过 §4.3 的交错审核。
+取消已发出的请求不能撤销 broker 可能已处理的请求，迟到结果只能按旧 scope 隔离。
+
+Lost 取消并隔离旧提交；如果产生最终提交失败，仍按提交失败契约结束 Job，不能因会话
+重入规则允许恢复而忽略这个失败。提交 callback 只记录结果，不同步等待 Runtime 关闭，
+不在 callback 内递归发起下一次提交。下一次提交只能在前次流程结束后由协调路径发起。
 
 选择 Source 级单请求简化普通/最终提交排序，代价是不同 partitions 的提交不能完全独立，
 retained progress 在 revoke 期间可能暂缓。若测量证明提交吞吐成为瓶颈，再评估更细粒度
@@ -349,7 +420,8 @@ Kafka Connector 提供以下配置；名称作为当前设计表达，代码尚�
 | `RevokeCommitReserve` | 5 秒 | 总预算内为最终提交、Complete 和回调返回预留的时长 |
 
 静态校验要求 `RevokeTimeout > 0` 且 `0 < RevokeCommitReserve < RevokeTimeout`。运行时总
-期限取本地预算、已有 shutdown deadline 和能够可靠确定的更早外部期限中的最早者；向
+期限取本次 revoke 回调进入时刻对应的本地预算、已有 shutdown deadline 和能够可靠确定的
+更早外部期限中的最早者；向
 `BeginRevoke` 传入总 deadline context 及 `RevokeOptions{CommitReserve: ...}`。运行时预算
 缩短到不足预留时长是正常收尾情形，不作为静态配置错误。
 
@@ -357,10 +429,36 @@ Kafka Connector 提供以下配置；名称作为当前设计表达，代码尚�
 未经 workload 验证，不是协议常量。它替代旧 Runtime `RevokeDrainTimeout` 的含义，不能
 描述为仍有完整 30 秒 drain。理由与被替代决定见 [ADR-0005](../decisions/0005-connector-owned-revoke-budget.md)。
 
+#### 3.4.1 本地期限与外部期限的不确定性
+
 franz-go 的 revoke callback context 是客户端 context，不直接给出 broker 实际截止时间。
-不能在回调开始时把配置的 `RebalanceTimeout` 重新完整计时。调度停顿、发现 rebalance 的
-延迟和协议推进都会消耗预算，可靠的保守期限推导仍见 §4.3；本地默认值不构成按时完成
-Kafka rebalance 的保证。
+本地受控等待按有限预算结束或放弃收尾；在 Kafka 外部期限内成功交接是需要争取并验证
+的目标，不承诺网络异常或进程长时间停顿后 ownership 仍然有效。
+
+```text
+总 deadline = min(
+    本次 revoke 回调进入时刻 + RevokeTimeout,
+    已有 shutdown deadline（若有）,
+    能够可靠确定的更早外部 deadline（若有）,
+)
+```
+
+没有可靠的外部 deadline 时不补造一个。Kafka RebalanceTimeout 用于协调配置和验证，
+不能在 callback 开始时重新完整计时并声称剩余时间由 broker 保证。发现 rebalance、
+短窗口阻挡、调度和协议推进都可能已经消耗时间。
+
+v1.21.6 的 OnPartitionsCallbackBlocked 由独立 goroutine 异步调用，覆盖多类 control
+callback，其实际执行时刻不能可靠代表本次 revoke 开始。因此以 revoke 回调进入时刻
+作为本地计时起点；blocked 通知仅作诊断和尽快释放 poll 短窗口的提示，不重置或决定
+revoke deadline。
+
+本地预算不声称覆盖回调进入之前已经发生的短窗口等待、调度停顿或协议耗时，也不能
+声称已准确扣除这些不可可靠测量的消耗。先前希望从 blocked 通知确定更早起点的方向
+由此具体化为回调入口计时，避免用可能迟到的异步通知构造错误时间关系。
+
+这一选择将本地有限收尾与不可精确观察的外部时限分开，避免用配置时长制造外部期限
+保证；代价是在异常情况下可能失去最终提交机会并增加重放。Lost、提交错误和 generation
+fence 仍必须执行，本地 deadline 不授予或延长 Kafka ownership。
 
 ### 3.5 控制回调与 Source failure
 
@@ -469,62 +567,95 @@ TryRead、直接在 callback 中同步关闭、把所有 lost 立即 FailJob 或
 均不能满足这些要求。跨组件理由见
 [ADR-0006](../decisions/0006-source-failure-reporting-and-session-recovery.md)。
 
-上述行为已接受；具体客户端版本是否覆盖这些错误、回调先后与关闭竞争仍需 §4.1 的
-适配核验，不能把接口或 hook 的存在当作恢复能力已验证。
+v1.21.6 的模拟验证已观察到 Lost 返回后调用 GroupManageError，再重新 Assigned；初次
+group 权限失败在完全不 poll 时也会先给出空 Lost，再通过 hook 提供原因。因此 Lost
+callback 先完成旧 ownership 隔离并返回，不能等待后续错误 hook 来决定是否隔离，否则
+会阻塞该 hook 的调用。具体证据见 §5，完整恢复 timer、错误覆盖及关闭竞争仍见 §4.1。
+
+### 3.7 第一版 group 协议范围
+
+第一版使用 classic Consumer Group 协议，分别验证 eager 和 cooperative 分配。分配策略
+与 group 协议是不同维度：支持 cooperative 不表示支持新 consumer group 协议。
+
+新的 group 协议涉及不同的成员 epoch、回调和提交重试行为，当前不把它并入已有正确性
+证明。v1.21.6 默认使用 classic；源码中的新协议需要客户端 context 携带隐藏的显式启用
+键。Connector 须确保客户端不携带该启用条件，不能仅依赖分配策略名称，也不能把源码
+注释中的 DisableNextGenRebalancer 当作实际可调用配置。模拟验证已观察到 JoinGroup，
+未观察到 next-gen heartbeat；仍需真实 broker 和多实例测试。存在实际需求时再独立设计、
+验证后扩展协议范围。
+
+选择有限协议范围，是为了让普通提交、revoke 最终提交、lost 和重入的请求身份与顺序
+能在一套明确模型下接受检验。版本虽已固定，完整客户端兼容性仍未验证；升级时须重新
+检查新协议启用条件和所依赖的回调、请求语义。
 
 ## 4. 当前开放问题
 
-以下是尚未完成的 M2 适配核验或设计问题，不因为 §3 的契约被接受而视为已解决。
+Kafka 主要设计、版本和初始默认值已接受；以下保留尚未完成的 M2 适配验证，不把局部
+模拟测试扩展成完整实现保证。测试发现影响既定契约的事实时再显式重新评估设计。
 
 ### 4.1 会话恢复信号与错误类型的版本适配核验
 
 - 已接受前提：§3.6 定义一分钟预算、恢复状态机、错误分类和独立最终失败报告，版本
   适配以这些契约为验证依据；
-- 问题：选定客户端版本/group 协议后，Lost、GroupManageError、assignment 与 poll 错误
+- 问题：v1.21.6/classic 下，Lost、GroupManageError、assignment 与 poll 错误
   的时序和覆盖是否足以落实契约；暂时网络/coordinator 错误的具体包装与类型如何映射；
 - 完成条件：给出版本对应的适配表，核验初次建立、空 assignment、暂停 poll、超时与
   assignment 竞争、关闭与迟到 hook，证明不漏报、不误判成功、不重置同次恢复预算。
   若发现 API 不能支持既定行为，明确报告并重新评估，不静默扩大可恢复错误范围。
 
-### 4.2 客户端预取的完整资源边界
+### 4.2 分层预取预算的客户端适配核验
 
-- 问题：如何证明客户端内部缓冲、在途 fetch、较大/压缩批次与 Connector 缓存整体满足
-  Source 数量有界要求；
-- 已知约束：全局 Connector 记录预算与 fetch 配置不能直接替代完整证明，数据 pause 后
-  已在途响应也必须纳入核算；
-- 完成条件：锁定客户端版本，给出资源上界、前提、超限处理及压力/故障测试；若无法满足
-  已接受保证，必须显式重新评估契约或客户端候选，不能静默降低承诺。
+- 已接受前提：§3.2 的 fetch/记录/work 分层计数及字节非保证；不新增 yaspe 响应或解压
+  字节限制，保留客户端原有保护；
+- 问题：所选客户端版本中，MaxConcurrentFetches 是否覆盖在途、正在解析及剩余缓冲
+  的结果；部分 poll、pause/resume 与 assignment 变化是否产生未受控的额外预取；
+- 完成条件：验证已接受的分层容量及默认值，用小/大 Connector 缓冲、跨多次 fetch 填充、
+  单 fetch 大于剩余容量、大消息、多记录压缩批次及慢 Sink 验证不溢出 Connector 记录
+  预算、不无限累计 fetch，并记录实际内存表现及客户端保护触发后的错误行为。
+  不将有限 workload 的峰值报告为硬内存上限；若客户端不能满足分层计数约束，须显式
+  重新评估适配或候选客户端。
 
-### 4.3 外部期限与提交适配验证
+### 4.3 本地期限与提交的客户端适配核验
 
-- 问题：如何可靠推导 Kafka 可用收尾期限，以及如何实现普通提交在 revoke/lost 时的有限
-  取消与串行化；
-- 已知约束：callback context 不是实际 broker deadline；本地超时不能撤销外部 effect；
-  Runtime generation fence 不等于 Kafka broker 会拒绝任意旧请求；
-- 完成条件：明确支持的客户端版本/group 协议、期限来源与保守前提、普通 commit 周期及
-  retry/backoff 配置、旧/新 assignment 与在途提交的可控交错。局部缓存锁、提交等待与
-  BeginRevoke 不得形成死锁，迟到请求不得被重新绑定到新 ownership。
+- 已接受前提：§3.3 的提交参数与失败后不补交、§3.4 的本地期限及外部不确定性、§3.7
+  的 classic group 范围；不要求客户端制造不存在的精确 broker deadline；
+- 已接受起点：revoke callback 入口；blocked 异步通知不作为计时依据；
+- 问题：v1.21.6 客户端提交的锁等待、内部重试及请求取消能否落实完整逻辑提交总预算，
+  多实例 classic 协议下旧请求怎样隔离；
+- 完成条件：基于固定版本及协议配置，给出参数映射和 callback/请求交错证据，覆盖
+  部分成功、响应丢失、旧请求超时后无补交、迟到请求不得绑定新 ownership、下一次请求
+  仅在旧提交成功结束后发出。局部锁、提交等待与 BeginRevoke 不得形成死锁；
+- 本地取消不撤销外部 effect，Runtime generation fence 不等于 broker 必然拒绝旧请求。
+  若现有 API 无法实现契约，明确报告并重新评估适配，不能以仅给 context 设置 timeout
+  作为底层已按时退出或没有迟到请求的证明。
 
 ## 5. 验证与实现边界
 
-实现与验证状态由 [Current Status](../status.md) 维护。测试矩阵见
+实现与验证状态由 [Current Status](../status.md) 维护。v1.21.6 的七项模拟 Kafka 定向测试
+已启用 race detector 并通过，程序、固定依赖、结果及复现方式保存在
+[版本验证附件](../verification/franz-go-v1.21.6/README.md)。它验证客户端部分行为，不是
+yaspe Runtime/Kafka Connector 实现，也不是完整故障或 workload 验证。测试矩阵见
 [Verification Design §1.4](0008-runtime-verification-and-observability.md#14-position-与-ownership)，
 包括 poll 登记窗口、背压时控制推进、提交排序、两种期限、empty callbacks、lost/reassign
-和外部不确定结果。真实客户端兼容性、fault/race 与 workload 证据是进一步收敛的前提。
+和外部不确定结果。已通过项与剩余真实 broker、多实例、完整超时/重试、资源验证在附件
+中分开记录，不将七项测试通过描述成所有 M2 验证已完成。
 
 ## 6. 客户端事实参考
 
-以下官方文档与源码用于解释候选选择和适配约束，不是已运行验证的证据；master/main 是
-移动引用，实现前必须固定版本并复核 §4 的问题：
+以下源码固定为 v1.21.6，用于解释版本选择和适配约束；运行证据单独见 §5。升级必须
+复核这些依赖，不能用移动的 master 页面代替版本事实：
 
-- [franz-go 项目说明](https://github.com/twmb/franz-go)：纯 Go 客户端及 group 支持；
-- [kgo API](https://pkg.go.dev/github.com/twmb/franz-go/pkg/kgo)：PollRecords、BlockRebalanceOnPoll、
+- [franz-go 项目说明](https://github.com/twmb/franz-go/tree/v1.21.6)：纯 Go 客户端及 group 支持；
+- [版本依赖](https://github.com/twmb/franz-go/blob/v1.21.6/go.mod)：Go 1.25 基线与 kmsg 依赖；
+- [kgo API](https://pkg.go.dev/github.com/twmb/franz-go@v1.21.6/pkg/kgo)：PollRecords、BlockRebalanceOnPoll、
   AllowRebalance、fetch 限制、CommitOffsetsSync 与回调 context/关闭约束；
-- [group 实现](https://github.com/twmb/franz-go/blob/master/pkg/kgo/consumer_group.go)：空 revoke、
+- [group 实现](https://github.com/twmb/franz-go/blob/v1.21.6/pkg/kgo/consumer_group.go)：空 revoke、
   lost 后的客户端重入及 commit 串行化路径；
-- [配置与回调注释](https://github.com/twmb/franz-go/blob/master/pkg/kgo/config.go)：RebalanceTimeout
+- [配置与回调注释](https://github.com/twmb/franz-go/blob/v1.21.6/pkg/kgo/config.go)：RebalanceTimeout
   包含检测消耗，回调 context 不能直接作为实际 rebalance deadline。
-- [group 错误 hook](https://github.com/twmb/franz-go/blob/master/pkg/kgo/hooks.go)：独立观察会话
+- [poll 与 blocked 通知](https://github.com/twmb/franz-go/blob/v1.21.6/pkg/kgo/consumer.go)：窗口与异步通知；
+- [新协议启用条件](https://github.com/twmb/franz-go/blob/v1.21.6/pkg/kgo/consumer_group_848.go)：classic 默认路径；
+- [group 错误 hook](https://github.com/twmb/franz-go/blob/v1.21.6/pkg/kgo/hooks.go)：独立观察会话
   管理错误的候选入口；
-- [Kafka 错误类型](https://github.com/twmb/franz-go/blob/master/pkg/kerr/kerr.go)：错误码与
+- [Kafka 错误类型](https://github.com/twmb/franz-go/blob/v1.21.6/pkg/kerr/kerr.go)：错误码与
   Retriable 标记，用于阶段相关的 Connector 分类。

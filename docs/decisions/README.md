@@ -7,12 +7,13 @@
 
 | ID | 决策 | 状态 | 影响阶段 | 权威文档 |
 |---|---|---|---|---|
-| ADR-0001 | Source 数据进入由 Runtime admission 控制 | Accepted | M1+ | [0001](0001-runtime-controlled-source-ingestion.md) |
+| ADR-0001 | Runtime 控制 Source 数据进入（原资源保证） | Superseded by ADR-0007 | M1+ | [0001](0001-runtime-controlled-source-ingestion.md) |
 | ADR-0002 | 早期多实例 Kafka Source 使用 Consumer Group 协调（原预算） | Superseded by ADR-0005 | M2+ | [0002](0002-use-kafka-consumer-group-for-external-coordination.md) |
 | ADR-0003 | 使用仓库文档保存项目记忆与三维状态 | Accepted | 全阶段 | [0003](0003-use-repository-docs-as-project-memory.md) |
 | ADR-0004 | Sink Retry 留在 Connector 内部，最终失败由 Runtime FailJob | Accepted | M2–M6 | [0004](0004-keep-sink-retry-inside-connector.md) |
 | ADR-0005 | 保留 Consumer Group 协调，由 Connector 提供 revoke 时间预算 | Accepted | M2+ | [0005](0005-connector-owned-revoke-budget.md) |
 | ADR-0006 | Source 最终失败独立报告，Kafka 会话恢复由 Connector 限时管理 | Accepted | M1–M2 | [0006](0006-source-failure-reporting-and-session-recovery.md) |
+| ADR-0007 | Source 按层计数，Kafka 不新增字节限制 | Accepted | M1–M2 | [0007](0007-layered-source-prefetch-budgets.md) |
 
 ## 核心执行模型局部决定
 
@@ -31,9 +32,11 @@
 | D-REBALANCE-001 | revoke 暂停 Source 全部 admission，started/Sink-owned work有限收敛 | Accepted | M2 | [Kafka Design §2](../designs/0007-position-and-kafka-rebalance.md#2-kafka-rebalance) |
 | D-REBALANCE-002 | 独立 RevokeDrainTimeout 默认 30 秒（历史） | Superseded by D-REBALANCE-003 | M2 | [ADR-0002](0002-use-kafka-consumer-group-for-external-coordination.md) |
 | D-REBALANCE-003 | Connector 总 deadline 与提交预留，Runtime 推导 drain 截止 | Accepted | M2 | [Source Design §1.3.1](../designs/0003-source-reader-and-admission.md#131-split-control-边界) · [ADR-0005](0005-connector-owned-revoke-budget.md) |
-| D-KAFKA-001 | franz-go 首选候选，poll 登记短窗口与分层背压 | Accepted / details discussing | M2 | [Kafka Design §3](../designs/0007-position-and-kafka-rebalance.md#3-kafka-客户端适配) |
-| D-KAFKA-002 | 显式安全位置提交，Source 级串行与 revoke 最终提交交接 | Accepted / details discussing | M2 | [Kafka Design §3.3](../designs/0007-position-and-kafka-rebalance.md#33-offset-提交与-revoke-交接) |
+| D-KAFKA-001 | 固定 franz-go v1.21.6，poll 登记短窗口与分层背压 | Accepted | M2 | [Kafka Design §3](../designs/0007-position-and-kafka-rebalance.md#3-kafka-客户端适配) |
+| D-KAFKA-002 | 显式安全位置提交及参数，Source 级串行，旧提交最终失败后不补交 | Accepted / version adaptation pending | M2 | [Kafka Design §3.3](../designs/0007-position-and-kafka-rebalance.md#33-offset-提交与-revoke-交接) |
 | D-KAFKA-003 | 有限会话建立/恢复、阶段相关错误分类与 assignment 成功边界 | Accepted / version adaptation pending | M2 | [Kafka Design §3.6](../designs/0007-position-and-kafka-rebalance.md#36-会话建立与恢复) |
+| D-KAFKA-004 | 默认 2 个 fetch / 1,024 条 Connector 缓冲，可配置且为正整数，不承诺整体记录数或字节上限 | Accepted | M2 | [Kafka Design §3.2](../designs/0007-position-and-kafka-rebalance.md#32-分层缓存与背压) |
+| D-KAFKA-005 | Revoke callback 入口计时，blocked 只作诊断；本地期限不等于外部保证，限定 classic group | Accepted | M2 | [Kafka Design §3.4.1](../designs/0007-position-and-kafka-rebalance.md#341-本地期限与外部期限的不确定性) · [§3.7](../designs/0007-position-and-kafka-rebalance.md#37-第一版-group-协议范围) |
 
 ## 维护规则
 

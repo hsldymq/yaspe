@@ -406,7 +406,8 @@ Coordinator 消费 terminal queue 并调用 `Accept`，completion 路径也独�
 - 不自行决定最终提交位置；
 - 不将外部客户端对象暴露给业务 Operator。
 
-Source 采用受 Runtime 控制的数据进入模型，详见 ADR 0001：
+Source 采用受 Runtime 控制的数据进入模型，详见
+[ADR-0007](decisions/0007-layered-source-prefetch-budgets.md)（保留原 admission 方向，明确分层预算）：
 
 ```text
 External Source
@@ -421,7 +422,10 @@ Runtime
 Connector 已从外部系统读取、但尚未完成受控交接的数据，仍由 Connector
 持有，不占用 Runtime 的 record-level in-flight permit，也不进入 completion tracking。
 这一边界允许 Kafka 批量 poll、网络预取和 callback Source 适配各自的物理读取模型，
-但 Connector 内部的未交接数据在第一版至少必须按数量有界；按字节限制属于后续增强。
+各层须明确容量及计数单位：Kafka 客户端内部按 fetch 数，Connector 已取出数据按记录数，
+Runtime 按 work 数约束。不承诺整个 Kafka Source 的固定记录总数或内存字节上限；第一版
+不新增 yaspe 字节/解压限制，保留客户端原有配置和保护。具体保证见
+[Kafka Design §3.2](designs/0007-position-and-kafka-rebalance.md#32-分层缓存与背压)。
 
 Job 临时暂停时，Connector 可以保留已读取的有界未交接数据，但不得
 继续扩大预取；恢复后应先按 split 内原顺序交接这些数据，再继续读取新数据。
@@ -1185,7 +1189,9 @@ Mailbox fills to its finite capacity
 Source pauses or blocks bounded handoff
 ```
 
-背压链路中任何缓冲都不能无限增长。
+背压链路中各层按声明的计数单位限制积压，不能通过新增无界缓冲绕过背压；这不构成
+固定内存字节上限，Kafka 的 fetch 与记录计数边界见
+[Kafka Design §3.2](designs/0007-position-and-kafka-rebalance.md#32-分层缓存与背压)。
 
 ### 17.3 Operator 失败
 
@@ -1278,10 +1284,19 @@ Connector 最终提交并 Complete；未知 Sink operation 不得标记成功。
 [Source Design §1.3.1](designs/0003-source-reader-and-admission.md#131-split-control-边界)，
 Kafka 初始默认配置与客户端期限限制见 [Kafka Design §3.4](designs/0007-position-and-kafka-rebalance.md#34-kafka-revoke-配置)。
 
-Kafka 客户端首选候选为 franz-go。Connector 的数据获取与 control callback 独立推进，
+本地受控等待遵守有限总预算，Kafka 外部 ownership 不由这个期限延长。没有可靠外部
+deadline 时不从 RebalanceTimeout 重新计时推导精确剩余时间。以 revoke callback 入口
+计时，异步 blocked 通知只作诊断/提示，不声称覆盖 callback 前的等待。完整规则见
+[Kafka Design §3.4.1](designs/0007-position-and-kafka-rebalance.md#341-本地期限与外部期限的不确定性)。
+
+Kafka 客户端适配基线固定为 franz-go v1.21.6。Connector 的数据获取与 control callback 独立推进，
 poll 结果到有界缓存登记使用短暂 rebalance 阻挡。正常 offset 提交只使用 Runtime safe
 position，并与 revoke 最终提交串行交接；具体适配及未决限制见
 [Kafka Design §3–4](designs/0007-position-and-kafka-rebalance.md#3-kafka-客户端适配)。
+
+已有普通提交须确认成功结束才允许最终提交；超时、取消或最终失败后不追加补救提交，
+避免外部旧请求未结束时新请求在另一连接上先完成。第一版限定 classic Consumer Group，
+支持 eager/cooperative，具体参数、失败规则和协议范围以 Kafka Design 为准。
 
 Ownership 失效后：
 

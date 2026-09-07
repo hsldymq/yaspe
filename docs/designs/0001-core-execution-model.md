@@ -44,7 +44,8 @@ Kafka
 
 - Map、Filter、FlatMap 等短计算能够利用单机多核；
 - Worker 将最终输出交给 Sink 后，不必等待落库即可处理下一条输入；
-- Sink 写不赢时，内存、队列、goroutine 和 timer 不会无限增长；
+- Sink 写不赢时，各层按声明的计数单位停止扩大积压，队列、goroutine 和 timer 不会
+  无限制增加；记录/批次大小可变，第一版不承诺内存字节上限；
 - Sink 尚未明确成功时，Kafka position 不得提前推进；
 - 第一版优先避免静默丢失，可以接受故障边界的重复；
 - Kafka heartbeat/session 不因业务回压被错误阻塞；
@@ -231,7 +232,9 @@ type RuntimeOptions struct {
 - input queue、terminal work queue 和 reporter wakeup 等局部容量由 Runtime 根据这两个值推导为有界内部默认值，第一版不作为用户配置；
 - 第一版 `terminalWorkQueueCapacity = min(MaxInFlightWorks, 2 * Parallelism)`，用于吸收约两轮 Worker 同时完成的短暂突发；倍数是可通过 benchmark 调整的内部参数，未来改为 1 倍或其他值不改变公开语义；
 - terminal queue 按 completed work 计数，一个 work 的完整 `[]SinkItem[T]` 只占一个 queue slot；
-- Sink 通过自身 `MaxBufferedItems` 或等价配置限制已接管 item 数，Source Connector 通过 `PrefetchItems` 或等价配置限制未交接预取；
+- Sink 通过自身 `MaxBufferedItems` 或等价配置限制已接管 item 数；Source 的客户端内部
+  预取与 Connector 已取出记录按各自单位配置，Kafka 使用 fetch/记录分层计数，详见
+  [Kafka Design §3.2](0007-position-and-kafka-rebalance.md#32-分层缓存与背压)；
 - retry 继续占用原 completion responsibility 和同一个 work permit。
 
 第一版明确不保证单条 Record、单 work FlatMap 输出或系统总驻留数据的字节数有界。业务应为 Sink 配置足以原子接管正常 item group 的容量；永久超过 Sink 最大接管能力的 group 返回真实 error，不得无限 Backpressured。后续只有在实际数据证明需要时，再增加字节预算或 `MaxOutputsPerWork`。
@@ -279,7 +282,8 @@ checkpoint completion and recovery
 ### 7.1 第一版保证
 
 - 外部物理 pull/push 差异由 Connector 适配，Operator 不感知；
-- Connector 预取、Runtime 队列、attempt output、Sink buffer/request/retry 均有界；
+- Connector 预取、Runtime 队列、attempt output、Sink buffer/request/retry 按 §5.3
+  各自的计数单位受约束，不构成全系统记录总数或字节上限；
 - Sink 变慢最终耗尽 permit 并把回压传回 Source；
 - Kafka 回压期间仍维护必要的 session/control；
 - 每次 Process 获得逻辑独立 Collector；

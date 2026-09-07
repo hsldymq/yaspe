@@ -33,9 +33,11 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | M2 Position / Completion | Accepted | Not Started | Not Applicable | [Position Design](designs/0007-position-and-kafka-rebalance.md) · [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | 异步 Sink 协议 | Accepted | Not Started | Not Applicable | [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | Kafka Consumer Group / Revoke 时间预算 | Accepted | Not Started | Not Applicable | [ADR-0005](decisions/0005-connector-owned-revoke-budget.md) · [Source Design §1.3.1](designs/0003-source-reader-and-admission.md#131-split-control-边界) |
-| Kafka poll / 背压 / 提交 / 控制回调 | Accepted（阶段性契约） | Not Started | Not Applicable | [Kafka Design §3](designs/0007-position-and-kafka-rebalance.md#3-kafka-客户端适配) |
+| Kafka poll / 背压 / 提交 / 控制回调 | Accepted | Not Started | Not Applicable | [Kafka Design §3](designs/0007-position-and-kafka-rebalance.md#3-kafka-客户端适配) |
+| Kafka fetch/记录分层预算与字节非保证 | Accepted | Not Started | Not Applicable | [Kafka Design §3.2](designs/0007-position-and-kafka-rebalance.md#32-分层缓存与背压) · [ADR-0007](decisions/0007-layered-source-prefetch-budgets.md) |
 | Kafka 会话建立/恢复预算与错误分类 | Accepted | Not Started | Not Applicable | [Kafka Design §3.6](designs/0007-position-and-kafka-rebalance.md#36-会话建立与恢复) |
-| Kafka 版本适配 / 客户端上界 / 外部期限 | Discussing / 待核验 | Not Started | Not Applicable | [Kafka Design §4](designs/0007-position-and-kafka-rebalance.md#4-当前开放问题) |
+| Kafka 提交参数 / 本地期限边界 / classic group 范围 | Accepted | Not Started | Not Applicable | [Kafka Design §3.3–3.7](designs/0007-position-and-kafka-rebalance.md#33-offset-提交与-revoke-交接) |
+| Kafka v1.21.6 基线 / 预取默认值 / revoke 计时起点 | Accepted | Not Started | Not Applicable | [Kafka Design §3](designs/0007-position-and-kafka-rebalance.md#3-kafka-客户端适配) |
 | Kafka / ClickHouse Connector | Discussing | Not Started | Not Applicable | [Roadmap M2](roadmap.md#6-m2source-position完成跟踪与生产级-sink) |
 | Dead Letter / Side Output | Planned for later | Not Started | Not Applicable | [Roadmap M4](roadmap.md#8-m4keyby分区执行与逻辑物理执行图) |
 
@@ -61,6 +63,10 @@ package operator
 
 尚不存在 JobBuilder、Transformation、Runtime、Source/Sink Connector、position、completion
 tracker、Kafka 或 ClickHouse 实现。
+
+[franz-go v1.21.6 验证附件](verification/franz-go-v1.21.6/README.md) 是独立 Go module，包含
+七项客户端模拟测试及固定依赖；不属于上述生产实现，根模块测试也不包含它。已观察行为
+与未覆盖场景由附件维护，不能据此把 Kafka Connector 标记为 Implemented 或完整 Verified。
 
 ## 最近接受的决定
 
@@ -165,13 +171,26 @@ tracker、Kafka 或 ClickHouse 实现。
   position 和 generation fence 分离，详见
   [Position Design §1.4](designs/0007-position-and-kafka-rebalance.md#14-work-终态success-与-permit)。
 
-- Kafka 以 franz-go 为首选候选；BlockRebalanceOnPoll 只保护 poll 到缓存登记的短窗口，
-  不等待业务完成。Connector 使用全局记录预算、满时暂停 fetch，客户端内部预取另行
-  核算；完整上界仍需证明，详见 [Kafka Design §3.1–3.2](designs/0007-position-and-kafka-rebalance.md#31-客户端候选与-poll-登记窗口)。
+- Kafka 固定 franz-go v1.21.6 为适配基线；BlockRebalanceOnPoll 只保护 poll 到缓存登记的短窗口，
+  不等待业务完成。客户端内部限制在途及缓冲 fetch 数，Connector 已取出/转换中数据
+  使用全局记录预算；按预留容量分批 poll，满时暂停。第一版不新增 yaspe 字节/解压
+  限制，保留客户端原有配置和保护，不承诺整个 Source 的固定记录数或字节上限。
+  MaxConcurrentFetches 默认 2，Connector 缓冲默认 1,024 条，两者均可配置且须为正整数；
+  具体组合仍需实现验证，详见
+  [Kafka Design §3.1–3.2](designs/0007-position-and-kafka-rebalance.md#31-客户端候选与-poll-登记窗口)
+  与 [ADR-0007](decisions/0007-layered-source-prefetch-budgets.md)。
 - Kafka 禁用自动提交，Runtime 周期合并 safe frontier；每 Source 一个提交请求，有限
-  重试后最终失败 FailJob，revoke 暂停新普通提交并在已有请求收敛后提交冻结位置。
+  重试后最终失败 FailJob。普通周期默认 3 秒、可配置；逻辑提交总超时 5 秒，退避初始
+  100 毫秒并增长至最多 1 秒。revoke 暂停新普通提交，旧请求确认成功后才提交冻结位置；
+  旧请求超时/取消/最终失败后不再补交，本地期限不代表精确 Kafka 外部期限或延长 ownership。
   空控制回调不直接传给 Runtime；Lost 立即 fence，不等于必然 FailJob，详见
   [Kafka Design §3.3–3.5](designs/0007-position-and-kafka-rebalance.md#33-offset-提交与-revoke-交接)。
+- Kafka 第一版限定 classic Consumer Group，支持 eager/cooperative 分配；具体客户端版本
+  已固定，局部模拟已观察到 classic 路径，完整兼容性仍待验证，详见
+  [Kafka Design §3.7](designs/0007-position-and-kafka-rebalance.md#37-第一版-group-协议范围)。
+- Revoke 本地计时从对应 callback 进入时刻开始；OnPartitionsCallbackBlocked 是异步
+  诊断/提示，不作为可靠起点，不声称本地预算覆盖 callback 前的窗口等待或外部耗时，
+  详见 [Kafka Design §3.4.1](designs/0007-position-and-kafka-rebalance.md#341-本地期限与外部期限的不确定性)。
 - Kafka `SessionRecoveryTimeout` 默认 1 分钟且必须大于零，覆盖初次建立和会话恢复；
   同次重试不刷新预算，成功处理 assignment 后结束计时，空 assignment 也可成功。
   错误按类型与阶段区分，最终 offset 提交不借用会话恢复预算；客户端版本信号仍待核验，
@@ -189,21 +208,27 @@ tracker、Kafka 或 ClickHouse 实现。
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
 
-1. Kafka 客户端内部预取、在途 fetch 与 Connector 缓存的完整资源上界；
-2. Kafka 可靠的外部 revoke 期限、普通提交参数、旧请求串行化与会话恢复信号的版本适配核验；
-3. ClickHouse batch/flush/unknown effect、M2 指标、故障注入和交付保证审核。
+1. ClickHouse Connector 的 batch、flush、部分失败、unknown effect、内部 retry 与有限关闭设计；
+2. M2 指标、故障注入和交付保证审核；
+3. Kafka 主要设计已收敛，完整适配验证仍待完成：真实 broker、多实例 eager/cooperative、
+   提交超时/重试及旧请求、恢复 timer/迟到事件、默认预取组合和大消息/长期背压。
+   已通过的七项与证据限制见 [验证附件](verification/franz-go-v1.21.6/README.md)，详细矩阵
+   见 [Kafka Design §4](designs/0007-position-and-kafka-rebalance.md#4-当前开放问题)。
 
 ## 当前唯一下一步
 
-核验并收敛 Kafka 客户端预取的完整资源边界，以
-[Kafka Design §4.2](designs/0007-position-and-kafka-rebalance.md#42-客户端预取的完整资源边界)
-为起点，覆盖内部缓冲、在途请求和较大/压缩批次；不能只以 Connector 缓存容量证明整体有界。
+讨论并接受 ClickHouse Connector 的 batch、flush 与失败语义，从
+[Sink Design](designs/0005-sink-handoff-and-completion.md) 已接受的整组接管、逐 item completion、
+Connector 内部 retry 和有限 Close 契约出发，明确实际客户端的完成与不确定结果边界。
 
 ## 最近验证
 
-验证日期：2026-09-07。变更范围为文档契约与交接记录，未新增 Runtime 或 Connector 实现。
+验证日期：2026-09-07。变更范围为文档契约、交接记录与独立客户端验证附件，未新增 Runtime
+或 Connector 生产实现。
 
 - `go test ./...`：现有 Operator 基线通过，不构成新 Source/Kafka 契约的实现验证；
+- 在版本验证附件目录运行 `go test -race -v -count=1 -timeout 60s ./...`：七项通过，
+  原始输出和限定范围见 [验证附件](verification/franz-go-v1.21.6/README.md)；
 - `git diff --check`：通过；
 - Markdown 相对链接目标与章节锚点检查：通过；
-- Runtime/fault/race benchmark：尚不适用或尚未运行。
+- Runtime race/fault、真实 Kafka 故障测试及 benchmark：尚未运行；不能与客户端模拟测试混同。

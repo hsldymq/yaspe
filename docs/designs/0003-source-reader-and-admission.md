@@ -3,7 +3,7 @@
 状态：Accepted
 最后更新：2026-09-07
 适用阶段：M1–M2
-依赖：[核心执行模型](0001-core-execution-model.md) · [ADR-0001](../decisions/0001-runtime-controlled-source-ingestion.md) · [ADR-0006](../decisions/0006-source-failure-reporting-and-session-recovery.md)
+依赖：[核心执行模型](0001-core-execution-model.md) · [ADR-0007](../decisions/0007-layered-source-prefetch-budgets.md) · [ADR-0006](../decisions/0006-source-failure-reporting-and-session-recovery.md)
 
 本文是 Runtime-facing 非阻塞 Reader、可用性通知、完整 reservation、ownership 交接与 M1 Memory Source 的权威契约。
 
@@ -339,7 +339,16 @@ ready 后的绑定不承诺对 yaspe 内部 bug、进程崩溃或硬件故障实
 最小内部操作 panic，它是 `InternalPanicError`：Runtime 强制 FailJob、不推进 position，由可重放
 Source 在重启后重放未提交输入。Memory Source 不提供进程级恢复，这是其已声明的非保证。
 
-第一版 Connector 预取至少在记录数上有明确上限。Runtime 无容量时，Connector 可以阻塞、暂停业务读取、使用 credit、保留有界缓存或采用协议等价方式，但不得继续扩大积压。按字节限制预取属于后续增强，不是当前保证。
+Source 各层须明确自己的容量及计数单位：Connector 已取出、转换中或等待交接的记录按
+记录数限制；外部客户端内部预取可以按有限请求/批次单位约束，具体契约由 Connector
+Design 指定。Runtime 无容量时，Connector 可以阻塞、暂停业务读取、使用 credit 或协议
+等价方式，但不能借客户端预取或新增私有队列持续扩大积压。
+
+Kafka 第一版按客户端 fetch 数与 Connector 记录数分层约束，不承诺整个 Source 的统一
+记录数或字节上限，不新增 yaspe 字节/解压限制，详见
+[Kafka Design §3.2](0007-position-and-kafka-rebalance.md#32-分层缓存与背压)。Memory Source
+仍按 §1.7 使用严格的记录数缓存上限。原统一预取记录数要求与替代理由见
+[ADR-0007](../decisions/0007-layered-source-prefetch-budgets.md)。
 
 ### 1.5 Kafka session 特殊约束
 

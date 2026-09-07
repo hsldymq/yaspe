@@ -13,7 +13,8 @@
 
 - 慢 Sink 最终阻止 Source 继续扩大读取或预取；
 - 队列和 Sink 饱和时，work/item 数量和 goroutine 保持有界；第一版不保证字节数有界；
-- Connector 内部预取数量可配置或有明确上限；字节上限属于后续增强；
+- Source 各层按声明的单位验证容量：Kafka 客户端的在途/缓冲 fetch 数、Connector 已取出
+  记录数、Runtime work 数分别受限；不据此声称整个 Source 的记录总数或字节上限；
 - callback/push Source 也能通过有界适配层响应 admission；
 - Kafka Connector 在业务回压期间仍满足 heartbeat/session 生命周期。
 - 确定性竞态测试必须把数据发布分别注入到 `TryRead` 返回 `unavailable` 之前、之后以及
@@ -111,20 +112,42 @@ Kafka 适配的验证须覆盖 [Kafka Design §3](0007-position-and-kafka-rebala
   不因窗口外转换增加未受控缓存或改变 split 交接顺序；
 - 缓存满时停止新 poll，callback 仍可推进；新 assignment 不能绕过背压，resume 同时检查
   capacity、ownership、revoke、shutdown，retained 缓存和 generation 不重置；
-- 客户端缓冲、fetch 在途/响应、较大与压缩批次单独计入资源证明；只限制 PollRecords
-  返回数量不能作为完整有界性验证，具体未决条件见 Kafka Design §4.2；
+- 客户端在途、解析和剩余缓冲结果按 fetch 计数核验，部分 PollRecords 返回不得提前
+  释放仍有数据的 fetch 预算；版本适配要求见 Kafka Design §4.2；
+- 预取配置默认 MaxConcurrentFetches=2、Connector 缓冲=1,024 条，两者均可配置且必须
+  为正整数；实际 Connector 默认组合及零/负值拒绝仍需测试，不能由小样本客户端测试替代；
+- 单 fetch 记录数超过 Connector 剩余容量时分批取出，未取部分留在客户端；Connector
+  缓冲大于一次 fetch 时可以经多次 fetch 填充，不能把并发数误当作 fetch 总次数限制；
+- 小/大 Connector 缓冲均应在记录就绪后立即允许交接，不等待填满；验证容量差异影响
+  背压而不改变结果、顺序或 ownership。满时停止新 poll/pause fetch，在途响应仍计数；
+- 用大消息、多记录压缩批次、共享底层缓冲和慢 Sink 观察实际内存及分层计数，不将
+  测得峰值提升为字节上限。保留客户端原有保护及真实错误处理，不测试尚未承诺的
+  yaspe 字节拒收或额外受限解压；
 - 空 assignment/revoke 不调用空集合 Runtime control，空 lost 仍观察错误；回调关闭路径
   不同步等待自身 group loop，最终失败在暂停数据读取时也能传到 Runtime；
 - 普通提交与 revoke 最终提交始终 Source 级单请求，dirty advance 只合并最新位置；
   在旧请求开始前、请求在途、响应后及 handle Complete 前后分别注入 revoke/lost；
+- 普通提交周期默认 3 秒并可配置；无 dirty 不发送，慢提交跨越多个周期时不积累任务，
+  多 partition 批量提交且只使用各自安全位置。revoke 最终提交不等待下一个周期；
+- 逻辑提交总超时 5 秒包含资格等待、请求、重试及退避；退避初始 100 毫秒、增长至
+  最多 1 秒，更早的调用/revoke/shutdown deadline 优先，不能按请求或重试重新计时；
 - 请求级成功但某 partition 失败不能返回整体 nil；部分外部成功、响应丢失、超时和迟到
   响应不被误报为原子全失败或全成功，最终提交失败按已接受 FailJob 契约处理；
 - 旧请求不能在最终 revoke 提交后重新发送或绑定新 ownership，取消等待不被当作外部
   请求已撤销，真实客户端版本须验证 broker 请求身份与本地 generation 隔离；
+- 旧普通提交必须确认成功结束才允许最终提交；超时、取消、最终失败后没有替代连接上
+  的补救提交。提交 callback 不递归提交、不同步等待 Runtime 关闭；Lost 导致最终提交
+  失败时不得借用会话恢复预算继续提交；
 - 手动时钟覆盖缺少 deadline、负/零预留、总预算不足、提前 drain 完成、drain 到期但
   handle 有效、总 context 取消/到期、迟到 Complete，以及冻结后的 Sink completion；
 - Kafka 默认预算、静态非法配置与运行时更早期限分别验证；已有普通提交等待、drain、
   最终提交与返回共同消耗一个总预算，不重置时间、不互相等待成环；
+- 本地 revoke 计时从 callback 入口开始；异步 blocked 通知只用于诊断/提示，延迟到达
+  不能重置计时或被当作精确起点。不声称本地预算覆盖 callback 前的窗口等待，缺少外部
+  deadline 时不从 RebalanceTimeout 伪造剩余时间。最终提交还应给 Complete 与 callback
+  返回留时间，本地超时/长调度停顿不被当作 ownership 仍有效的证据；
+- 所选 franz-go 版本明确使用 classic Consumer Group，分别验证 eager/cooperative；
+  客户端自动协议选择不能绕过范围，新的 group 协议不计入第一版通过的兼容性结果；
 - Lost 立即 fence、不 drain、不提交；同 partition 再次 Assign 只能建立新 scope，旧
   buffers/work/completion 不得复活。
 - 会话建立/恢复测试按 [Kafka Design §3.6](0007-position-and-kafka-rebalance.md#36-会话建立与恢复)
@@ -139,6 +162,17 @@ Kafka 适配的验证须覆盖 [Kafka Design §3](0007-position-and-kafka-rebala
   和同故障去重；暂停 poll 时最终失败仍能独立报告，见 Kafka Design §4.1。
 
 上述均为待实现验证要求，不能当作客户端兼容性、race/fault 或性能已验证的证据。
+
+#### v1.21.6 已运行的局部证据
+
+[独立版本验证附件](../verification/franz-go-v1.21.6/README.md) 保存七项测试、固定依赖与
+实际输出；已启用 race detector 并通过。它覆盖部分 poll/pause、classic 与窗口阻挡、
+无竞争提交取消、callback/关闭等待，以及停止 poll 后的 lost/错误通知和初次权限失败。
+这些是上述矩阵中的局部证据，其余项仍待验证。
+
+附件使用 kfake 与 net.Pipe，客户端 RequestRetries(0)；不证明五秒提交/退避组合、真实
+网络、完整多实例 rebalance 或 yaspe Runtime 的实现。默认 2/1,024、恢复一分钟的应用
+行为仍需 Connector/Runtime 实现测试，不标记为已完成。
 
 ### 1.5 可测试边界
 
@@ -276,14 +310,17 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
 
 ### 2.2 M2 实现前必须收敛
 
-- Kafka 客户端内部预取上界、实际可用 revoke deadline、普通提交周期/retry 参数，以及
-  旧请求取消/串行化的客户端适配证明，见
-  [Kafka Design §4.2–4.3](0007-position-and-kafka-rebalance.md#42-客户端预取的完整资源边界)。
-  poll 短窗口、Connector 全局缓存、显式提交和 revoke 时间职责已接受，不能因此将上述
-  客户端细节标记为完成；
+- Kafka 主要设计、v1.21.6 版本、本地 callback 入口计时和 classic 范围已接受；完整
+  协议配置、内部锁等待、retry 和取消/串行化仍需验证，见
+  [Kafka Design §4.3](0007-position-and-kafka-rebalance.md#43-本地期限与提交的客户端适配核验)；
+- Kafka fetch/记录分层预算、2/1,024 初始默认值及字节非保证已接受；实际默认组合、
+  部分 poll、pause 和 assignment 变化下的完整计数仍需验证，见
+  [Kafka Design §4.2](0007-position-and-kafka-rebalance.md#42-分层预取预算的客户端适配核验)。
+  不再要求证明整个 Source 的固定记录数或内存字节上限；
 - Kafka 会话恢复预算、错误分类与独立最终失败报告已接受，见
-  [Kafka Design §3.6](0007-position-and-kafka-rebalance.md#36-会话建立与恢复)。具体客户端
-  版本的错误包装和信号覆盖/时序仍需适配核验，完成条件见
+  [Kafka Design §3.6](0007-position-and-kafka-rebalance.md#36-会话建立与恢复)。v1.21.6 已观察
+  Lost → GroupManageError → Assigned 及不 poll 时的权限错误；其余错误覆盖、恢复 timer
+  和竞争仍待验证，完成条件见
   [Kafka Design §4.1](0007-position-and-kafka-rebalance.md#41-会话恢复信号与错误类型的版本适配核验)；
 - ClickHouse batch、flush、部分失败、unknown effect 和关闭 deadline；
 - M2 指标、故障注入矩阵和 at-least-once 声明审核。
@@ -300,7 +337,8 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
 实现或评审 M1/M2 时必须能回答：
 
 - 一条记录从何时开始由 Runtime 承担 completion responsibility；
-- 每层预取、队列、暂存、请求和 retry 的数量上限，以及哪些部分暂不承诺字节上限；
+- 每层预取、队列、暂存、请求和 retry 的计数单位及上限，哪些层不能合并为统一记录数
+  或字节上限，以及背压时已在途数据如何核算；
 - attempt 失败时哪些输出可丢弃，哪些已转给 Sink；
 - Sink 入队、外部完成、输入终结和 position 提交是否严格区分；
 - 暂停、终止和 revoke 是否仍允许安全进度继续提交；
