@@ -1,9 +1,9 @@
 # 0003：Source Reader、Admission 与 Memory Source
 
 状态：Accepted
-最后更新：2026-08-27
+最后更新：2026-09-07
 适用阶段：M1–M2
-依赖：[核心执行模型](0001-core-execution-model.md) · [ADR-0001](../decisions/0001-runtime-controlled-source-ingestion.md)
+依赖：[核心执行模型](0001-core-execution-model.md) · [ADR-0001](../decisions/0001-runtime-controlled-source-ingestion.md) · [ADR-0006](../decisions/0006-source-failure-reporting-and-session-recovery.md)
 
 本文是 Runtime-facing 非阻塞 Reader、可用性通知、完整 reservation、ownership 交接与 M1 Memory Source 的权威契约。
 
@@ -34,6 +34,7 @@ type Source[T any] interface {
 type SourceContext interface {
     LifecycleContext() context.Context
     ControlReporter() SourceControlReporter
+    ReportFailure(error) error
 }
 ```
 
@@ -44,6 +45,42 @@ admission、取消 lifecycle context，再以独立 shutdown-deadline context �
 Runtime 只 Close 成功 Open 的 Source；Open 在部分初始化后失败时由 Source 自行清理半成品。
 Close 开始后不再调用 TryRead，Close 不伪装成正常 finished，也不提交不安全 position。通用
 Source 不要求 Close 幂等，M1 Memory Source 保留其已接受的幂等保证。
+
+#### 1.1.2 独立的最终失败报告
+
+`SourceContext` 是 Runtime 实现并在 `Open` 时提供给 Source 的运行环境，名称表示其使用者。
+Source 实现读取和外部系统适配，Runtime 提供 lifecycle、control 与最终失败报告能力；
+增加此方法不要求每个 Source 实现一套 Runtime 失败处理器。
+
+Source 可能在 Runtime 因背压或暂停不再调用 `TryRead` 时发生最终失败。只依赖 Reader
+返回 error，会使会话恢复超时、权限错误等无法及时触发 FailJob。因此公开以下独立入口：
+
+```go
+reportErr := sourceContext.ReportFailure(sourceErr)
+```
+
+- `sourceErr` 必须非 nil，表示 Source 确定无法继续的最终失败；nil 返回参数错误，不构成
+  有效报告。暂时错误由 Connector 按自身已接受的恢复策略处理，不提前作为最终失败报告；
+- 返回 nil 仅表示 Runtime 已接收报告，不表示 Source 恢复、Job 成功或关闭流程已经完成。
+  非 nil 返回值描述报告本身的问题，例如入口已失效；不得用它替换原始 `sourceErr`；
+- 报告入口并发安全，快速登记并通知 Runtime，不等待业务 permit、队列空位、下一次
+  `TryRead` 或 Job 关闭，也不通过无限队列或每次报告创建 goroutine 实现通知；
+- 每个 Source instance 保留首个最终失败，重复报告不覆盖根因、不无限累积错误。
+  `TryRead` 仍可返回 error，但 Connector 的最终失败锁存与 Runtime 的登记须保持一致，
+  同一失败经两个入口被观察不能生成两条独立失败流程；
+- 已接收的最终失败进入现有 FailJob 路径，不使用 Operator Work Retry。全局 primary 仍
+  按 [Failure Design §1.7](0006-failure-panic-and-shutdown.md#17-公开-runerror) 确定；若 Job
+  已因其他错误停止，Source 报告不能覆盖该根因；
+- 入口在 Source Open 阶段即须可用；初始化失败仍遵循 §1.1.1 的部分资源自行清理规则。
+  Source 报告入口在关闭完成或最终终止失效后，迟到调用快速返回关闭错误，不能 panic、
+  阻塞或重新启动失败处理，也不能改变已返回的 RunError；
+- Connector callback 只报告失败，不同步等待 Runtime 或 Kafka 客户端关闭，防止生命周期
+  相互等待。关闭期间的附加错误与最终冻结仍遵循统一 RunError/关闭契约。
+
+该入口只补充数据 admission 之外的最终失败通知，不改变 ready 记录先绑定再观察停止的
+所有权规则，也不把控制事件或暂时错误混入业务 Record。Kafka 恢复预算与错误分类见
+[Kafka Design §3.6](0007-position-and-kafka-rebalance.md#36-会话建立与恢复)，跨组件取舍见
+[ADR-0006](../decisions/0006-source-failure-reporting-and-session-recovery.md)。
 
 ### 1.2 非阻塞 Reader
 
@@ -102,6 +139,8 @@ const (
 当次 `TryRead` 返回 error，不在该调用中继续交付缓存记录。M1 随后 FailJob 并在关闭时
 丢弃尚未交接的 Source-owned 缓存；M2 同样由 FailJob 关闭当前 Source，不在当前 Run 中保留
 缓存并尝试重建。未来 Source/Job 恢复若需要复用缓存，必须另行定义 ownership 与 fence。
+此处的 error 是 Source 对 Runtime 报告的最终失败；Connector 尚未报告最终失败之前的
+有限客户端会话恢复不等于恢复一个已经失败的 Source。独立报告入口见 §1.1.2。
 
 ### 1.3 可用性通知与控制事件
 
@@ -150,8 +189,12 @@ type SplitID string
 
 type SourceControlReporter interface {
     Assign(context.Context, []SplitID) error
-    BeginRevoke(context.Context, []SplitID) (RevokeHandle, error)
+    BeginRevoke(context.Context, []SplitID, RevokeOptions) (RevokeHandle, error)
     Lost(context.Context, []SplitID) error
+}
+
+type RevokeOptions struct {
+    CommitReserve time.Duration
 }
 
 type RevokeHandle interface {
@@ -182,6 +225,46 @@ Connector 在自己的 control/callback goroutine 中提交 `Positions()` 返回
 frontier、fence generation 并 FailJob。重复 Complete 返回 completed-handle error。原 context
 到期仍未 Complete 时 Runtime 自动 fence 并使 handle 失效；迟到 Complete 不得更新 position。
 Lost 不 drain、不返回 handle且禁止旧 position commit。
+
+##### Revoke 时间预算
+
+Connector 提供整个 revoke 的有限 context deadline，以及 `CommitReserve`：在总预算内为
+最终 position 提交、`Complete` 和控制回调返回预留的时长。Runtime 负责执行 drain，不再
+配置独立的 revoke drain 最长时长，也不要求 Connector 读取 Runtime 配置。
+
+```text
+drain deadline = 有效 revoke 总 deadline − CommitReserve
+
+BeginRevoke → Runtime drain → 冻结 positions、返回 handle → Connector commit → Complete
+                              ↑ drain 截止                                  ↑ 总截止
+```
+
+有效总 deadline 不得晚于调用 context 或已有 shutdown 的更早期限。排队、等待已有普通
+提交、drain、最终提交与 callback 返回共享该绝对期限，不在阶段切换时重新计时。Connector
+的默认预算及外部期限约束见 [Kafka Design §3.4](0007-position-and-kafka-rebalance.md#34-kafka-revoke-配置)。
+
+- `ctx` 必须有 deadline，`CommitReserve` 不得为负；参数错误在改变 ownership 前拒绝；
+- 通用接口允许 `CommitReserve == 0`，表示不额外预留；需要外部提交的 Connector 应使用正值；
+- 若剩余时间不大于预留时长，不等待业务继续完成，立即冻结当前安全位置并返回 handle；
+- 工作提前收敛就提前返回，预留时长不是提交自身的 timeout，也不是必须等待的时间；
+- drain 到期本身不作为 `BeginRevoke` 失败：停止等待、取消尚未交给 Sink 的未完成工作，
+  冻结可提交的成功前缀并返回有效 handle；Sink-owned 未知结果不得算作成功；
+- 冻结后的 completion 不得再改变 handle 的 positions 或产生该 revoking scope 的新 safe
+  progress。Sink-owned 操作仍按 completion/fence 契约收敛，不能假定可以撤销；
+- drain 截止不取消传入 context、不使 handle 失效；总 context 取消或有效总期限到期则使
+  handle 失效并 fence。调用开始时 context 已结束，不返回可继续提交的有效 handle；
+- 合法 revoke 一旦开始，不因 drain 到期恢复为 owned/readable。`Complete` 或最终 fence
+  才结束旧 ownership，恢复其他 split 还须满足 Job 未失败及没有其他暂停原因。
+
+选择显式 options 是因为预留时长直接控制本次操作，调用方可发现、Runtime 可验证。只用
+`context.WithDeadline` 提前取消会同时缩短 handle 有效期；用 context value 附带另一期限虽
+可实现，但会隐藏操作参数。直接要求 Connector 计算绝对 drain deadline 也可实现，第一版
+选择提供预留时长、由 Runtime 统一推导，避免重复预算算法。不使用动态 revoke 的 Source
+无需处理此 options。若未来出现独立于 Source 总预算的业务等待限制，再评估 Runtime 上限。
+
+原 `BeginRevoke(ctx, splits)` 与独立 `RevokeDrainTimeout` 没有显式区分 drain 截止和 handle
+失效，容易用尽预算后才进入提交。它们由以上契约替代；跨组件取舍及旧决定历史见
+[ADR-0005](../decisions/0005-connector-owned-revoke-budget.md)。
 
 Reporter 从 `Open(SourceContext)` 调用期间即有效，以支持同步初始 assignment。shutdown 后拒绝
 新 Assign；有效 ownership 的 BeginRevoke 合并到现有 shutdown drain并使用所有 deadline 中
@@ -332,7 +415,7 @@ type PositionCommitter interface {
 混合返回 unpositioned ready；Runtime 在启动时识别 capability，并把违反组合视为契约错误。
 `CommitPositions` 的 nil 返回是外部持久化成功，不只是进入 Connector 队列；每批同一 split
 最多一个 position，Runtime 可以合并多次 frontier 前进。正常提交频率、Kafka client 适配与
-commit failure 策略留给 Kafka Connector Design，不改变这一公共边界。
+commit failure 策略见 [Kafka Design §3.3](0007-position-and-kafka-rebalance.md#33-offset-提交与-revoke-交接)，不改变这一公共边界。
 
 ### 1.7 M1 Memory Source
 

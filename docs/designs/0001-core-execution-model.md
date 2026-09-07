@@ -1,7 +1,7 @@
 # 0001：核心执行模型总览
 
 状态：Accepted
-最后更新：2026-08-26
+最后更新：2026-09-07
 适用阶段：M0–M2
 
 > 本文件只维护跨能力的共同语言、总体执行形态、资源不变量、阶段保证和 Design 关系。
@@ -384,9 +384,10 @@ checkpoint completion and recovery
 - **取消全部未入 Sink work vs. 允许 started work 进入 Sink**：选择让已经开始执行的 revoked
   work 有限完成并进入 Sink，以填补 position 空洞、减少重放和重复；尚未开始的 work 不再启动。
   代价是 revoke 可能等待更久，因此必须受 drain deadline 限制。
-- **固定无限等待 vs. 默认 30 秒有限 drain**：选择 30 秒作为初始默认值，在常见 Sink drain
-  机会与 rebalance 可用性之间取平衡，并由 Connector 更早的实际 deadline 覆盖。该数值不是
-  协议常量，应根据客户端约束、工作负载延迟和生产指标重新校准。
+- **独立 Runtime drain 上限 vs. Connector 总预算内预留提交**：选择由 Connector 提供总
+  deadline 和提交预留，Runtime 推导 drain 截止，避免重复上限及 drain 用尽提交时间。
+  默认值与边界见 [Kafka Design §3.4](0007-position-and-kafka-rebalance.md#34-kafka-revoke-配置)，
+  被替代的默认 drain 决定及理由见 [ADR-0005](../decisions/0005-connector-owned-revoke-budget.md)。
 
 ### 8.6 对潜在冲突的统一表述
 

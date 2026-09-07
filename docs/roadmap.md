@@ -1,7 +1,7 @@
 # yaspe Roadmap
 
 文档状态：Living Document  
-最后更新：2026-08-24
+最后更新：2026-09-07
 关联文档：[vision.md](vision.md) · [architecture.md](architecture.md) · [status.md](status.md)
 
 ## 1. Roadmap 的目的
@@ -193,6 +193,8 @@ M11 分布式执行（探索）
 - rebalance 时暂停 Source 全部新业务 admission、保持 session/control、对 revoked split 执行有期限的在途任务 drain/cancel 和安全 position 提交；
 - 旧 ownership 完成的任务不得推进当前 position；
 - Kafka poll、heartbeat/session 与 Runtime 背压的协作；
+- Kafka 会话建立/恢复的有限预算与阶段相关错误分类，以及不受业务背压阻塞的 Source
+  最终失败报告，契约见 [Kafka Design §3.6](designs/0007-position-and-kafka-rebalance.md#36-会话建立与恢复)；
 - 禁用或约束不理解 Runtime 完成语义的自动 offset 提交；
 - graceful shutdown 时停止读取、flush、提交和释放 partition 的顺序；
 - 有界异步批量 Sink；
@@ -218,7 +220,7 @@ M11 分布式执行（探索）
 - Retry 是否可能产生重复输出有清楚说明和测试；
 - 多个实例使用同一 Consumer Group 时，同一 partition 不会被 yaspe 主动重复分配；
 - partition 被 revoke 后，旧 ownership 不会继续推进其 committed position；
-- 默认 30 秒 revoke drain 受 Connector 实际 rebalance deadline 限制；started/Sink-owned work 在期限内收敛，queued work 不启动；
+- revoke 总预算包含最终提交预留，drain 截止与 handle 最终失效分别验证；Kafka 默认配置及外部期限约束见 [Kafka Design §3.4](designs/0007-position-and-kafka-rebalance.md#34-kafka-revoke-配置)，started/Sink-owned work 有限收敛，queued work 不启动；
 - eager 和 cooperative rebalance 都通过 revoked split 集合正确处理，retained split 不重置，lost split 不执行旧 position commit；
 - 队列饱和和 Sink 变慢时，Kafka session 不会因错误的阻塞模型持续发生非预期 rebalance；
 - graceful shutdown 会停止新读取，并在期限内处理或明确放弃未完成的在途记录；

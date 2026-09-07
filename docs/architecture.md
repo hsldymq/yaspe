@@ -1,7 +1,7 @@
 # yaspe Living Architecture
 
 文档状态：Living Document  
-最后更新：2026-08-27
+最后更新：2026-09-07
 当前里程碑：M0 — 核心语义与项目基线  
 关联文档：[Vision](vision.md) · [Roadmap](roadmap.md) · [Current Status](status.md)
 
@@ -465,6 +465,12 @@ Source 最终组合 `Reader[T]`、`Open(SourceContext)` 和 `Close(context.Conte
 `InvalidReadResultError` 进入 Job 级 FailJob 路径；读取 error 与正常状态分开返回。正常结束先
 drain Connector 缓存再呈现永久 finished，读取失败则优先于尚未交接的缓存数据。
 完整结果和错误契约见 [Source Design §1.2](designs/0003-source-reader-and-admission.md#12-非阻塞-reader)。
+
+Runtime 在 Open 时向 Source 提供 SourceContext，其中 `ReportFailure(error) error` 独立
+于业务 admission 报告最终失败，避免背压或暂停使错误滞留在 TryRead 路径。输入是 Source
+根因，返回值只表示报告接收情况；Reader 与报告入口共享首个最终失败的语义，不能覆盖
+全局 RunError 已成立的 primary。完整接口、重复及迟到行为见
+[Source Design §1.1.2](designs/0003-source-reader-and-admission.md#112-独立的最终失败报告)。
 
 动态 split ownership 通过 `SourceContext` 注入的 `SourceControlReporter` 独立报告，不与业务
 Record 或 availability 混合。M2 使用显式 Assign、两阶段 BeginRevoke/RevokeHandle 和 Lost；
@@ -1243,7 +1249,7 @@ panic value 和 stack 作为高严重度附加错误保留，而不改写原始�
 ### 17.5 Kafka rebalance
 
 ```text
-Kafka Connector receives revoke(splits, generation, deadline)
+Kafka Connector receives revoke(splits); supplies total deadline and commit reserve
    ↓
 Runtime pauses all new business admission for this Kafka Source
    ↓
@@ -1266,9 +1272,16 @@ Revoke 开始后，第一版暂停该 Kafka Source 所有 split 的新业务 adm
 恢复。尚未开始的 revoked work 不再启动；已开始的 work 可以完成 Chain、进入 Sink 并等待
 completion，已有 Sink-owned work 同样有限等待，以尽量填补 position gap、减少重放。
 
-默认 `RevokeDrainTimeout` 为 30 秒，实际 deadline 不得超过 Connector 从 Kafka 协议和客户
-端生命周期获得的更早期限，并需为最终 commit 和控制回调返回预留安全时间。到期未知的
-Sink operation 不得标记成功，只提交连续 safe position。
+Connector 提供总收尾 deadline 和提交预留时长，Runtime 推导更早的 drain 截止，不额外
+配置独立 drain 上限。drain 截止后冻结 safe position，handle 仍在总期限内有效，供
+Connector 最终提交并 Complete；未知 Sink operation 不得标记成功。完整预算契约见
+[Source Design §1.3.1](designs/0003-source-reader-and-admission.md#131-split-control-边界)，
+Kafka 初始默认配置与客户端期限限制见 [Kafka Design §3.4](designs/0007-position-and-kafka-rebalance.md#34-kafka-revoke-配置)。
+
+Kafka 客户端首选候选为 franz-go。Connector 的数据获取与 control callback 独立推进，
+poll 结果到有界缓存登记使用短暂 rebalance 阻挡。正常 offset 提交只使用 Runtime safe
+position，并与 revoke 最终提交串行交接；具体适配及未决限制见
+[Kafka Design §3–4](designs/0007-position-and-kafka-rebalance.md#3-kafka-客户端适配)。
 
 Ownership 失效后：
 
@@ -1282,6 +1295,13 @@ Eager rebalance 把全部 revoked assignment 交给同一流程；cooperative re
 移动的子集。被 revoke 的 split 即使重新分配给同一实例也创建新 generation，并从 Kafka
 committed offset 恢复；retained split 不重置。split lost 表示 ownership 可能已经转移，
 此时立即 fence、清理且不再提交旧 position，不执行正常 drain。
+
+Lost 本身不决定是否 FailJob；Connector 根据错误性质区分可恢复会话变化与最终 Source
+failure。Kafka 会话建立/恢复采用 Connector 的有限预算，重复重试不刷新同次期限，成功
+处理 assignment 后结束计时，空 assignment 也可以成功；最终失败通过 SourceContext
+独立报告，不能被业务暂停遮蔽。完整默认值、分类和信号边界见
+[Kafka Design §3.6](designs/0007-position-and-kafka-rebalance.md#36-会话建立与恢复)。具体版本
+适配仍待核验，不代表会话恢复已实现或验证。
 
 新 owner 从最后成功持久化的 safe position 恢复。未提交但已产生外部效果的记录
 可能重复，这是当前 at-least-once 保证的已知边界，不得通过让旧 owner 跨

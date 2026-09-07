@@ -1,7 +1,7 @@
 # 0006：Failure、Panic 与 Shutdown
 
 状态：Accepted
-最后更新：2026-08-27
+最后更新：2026-09-07
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Sink Handoff](0005-sink-handoff-and-completion.md)
 
@@ -152,6 +152,12 @@ trigger；随后从同一或其他已接管 work 到达的最终失败作为 sec
 error 之间切换。Operator 失败、Sink 最终失败、Source read error、startup/Open error、用户或
 内部 panic、宿主 context 取消、shutdown timeout 和 Close error 都遵守这一入口；正常有界
 Source 完成返回 nil。`Build` 等定义期校验不属于 Run，仍直接返回其配置错误。
+
+Source 经 `SourceContext.ReportFailure` 独立报告的最终错误也进入此因果模型；其输入错误
+是故障原因，返回错误只是报告接收状态，不能替换原因。Reader 与独立报告对同一最终失败
+不得重复触发流程，完整规则见 [Source Design §1.1.2](0003-source-reader-and-admission.md#112-独立的最终失败报告)。
+Connector 在最终报告前执行已接受的有限会话恢复，不属于 Operator Retry；报告最终失败
+后不能在当前 Run 中复活 Source。
 
 `RunError` 是 `Run` 返回前冻结的不可变快照，概念接口为：
 

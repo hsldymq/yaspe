@@ -1,6 +1,6 @@
 # yaspe Design Map
 
-最后更新：2026-08-27
+最后更新：2026-09-07
 
 本文是近期 Design 的导航和依赖地图。它维护每个 Design 的权威范围、设计状态与阅读顺序，
 不复制完整契约，也不维护实现、验证、工作区或唯一下一步；这些动态事实由
@@ -12,15 +12,15 @@
 |---|---|---|---|
 | [0001 核心执行模型总览](0001-core-execution-model.md) | 共同术语、总体执行形态、资源不变量、阶段保证 | Accepted | — |
 | [0002 Job Definition 与 Runtime 实例化](0002-job-definition-and-runtime-instantiation.md) | type-state API、Factory、Build、生命周期、复用、类型擦除 | Accepted | 0001 |
-| [0003 Source Reader、Admission 与 Memory Source](0003-source-reader-and-admission.md) | Source lifecycle、非阻塞读取、split control、position commit、reservation、Memory Source | Accepted | 0001、ADR-0001 |
+| [0003 Source Reader、Admission 与 Memory Source](0003-source-reader-and-admission.md) | Source lifecycle、最终失败报告、非阻塞读取、split control、position commit、reservation、Memory Source | Accepted | 0001、ADR-0001、ADR-0006 |
 | [0004 Operator Attempt 与 Collector](0004-operator-attempt-and-collector.md) | Collector scope、Emit ownership、Chain、attempt 暂存 | Accepted | 0001、0002 |
 | [0005 Sink Handoff 与 Completion](0005-sink-handoff-and-completion.md) | 整组交接、Memory Sink、异步 completion、capacity、有限关闭 | Accepted | 0001、0004 |
 | [0006 Failure、Panic 与 Shutdown](0006-failure-panic-and-shutdown.md) | Operator Work Failure Policy、FailJob、RunError、panic、错误因果、shutdown | Accepted | 0001、0005 |
-| [0007 Position、Ownership 与 Kafka Rebalance](0007-position-and-kafka-rebalance.md) | split/position、私有 Completion Tracker、safe/committed position、generation fence、Kafka rebalance | Accepted / client adapter discussing | 0001、0003、0005、ADR-0002 |
+| [0007 Position、Ownership 与 Kafka Rebalance](0007-position-and-kafka-rebalance.md) | split/position、私有 Completion Tracker、generation fence、Kafka poll/背压/提交/rebalance/会话恢复 | Accepted / version adaptation, bounds and deadlines pending | 0001、0003、0005、ADR-0005、ADR-0006 |
 | [0008 Runtime 验证与可观测性](0008-runtime-verification-and-observability.md) | 指标、确定性测试、race/leak、fault、benchmark、审核清单 | M1 Accepted / M2 Discussing | 全部近期执行契约 |
 
-`Accepted / details discussing` 表示该 Design 中已经接受的行为继续有效，但文件明确列出的
-后续阶段接口或策略细节尚未收敛。实现与验证是否完成不得从该标签推断。
+`Accepted / details discussing` 或 `pending` 表示已接受的行为继续有效，但文件明确列出的
+接口/策略问题或版本适配核验尚未完成。实现与验证是否完成不得从该标签推断。
 
 ## 依赖关系
 

@@ -1,6 +1,6 @@
 # yaspe Current Status
 
-最后更新：2026-08-27
+最后更新：2026-09-07
 
 本文是动态交接快照，不是完整设计记录。完整契约见正式 Design，决定背景和取舍见
 [决策索引](decisions/README.md)，维护规则见 [Documentation Governance](governance.md)。
@@ -24,6 +24,7 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | Map / Filter / FlatMap | Accepted | Implemented | Unit Tested | [Operator Design §2](designs/0004-operator-attempt-and-collector.md#2-operator-chain-与-work-attempt-边界) |
 | M1 Reader / Memory Source 语义 | Accepted | Not Started | Not Applicable | [Source Design](designs/0003-source-reader-and-admission.md) |
 | M2 Source lifecycle / split control / position commit API | Accepted | Not Started | Not Applicable | [Source Design](designs/0003-source-reader-and-admission.md) |
+| SourceContext 最终失败报告 | Accepted | Not Started | Not Applicable | [Source Design §1.1.2](designs/0003-source-reader-and-admission.md#112-独立的最终失败报告) |
 | M1 同步 Memory Sink 语义 | Accepted | Not Started | Not Applicable | [Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink) |
 | 线性 Job Definition | Accepted | Not Started | Not Applicable | [Job Design](designs/0002-job-definition-and-runtime-instantiation.md) |
 | M1 Stateless Runtime | Accepted | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
@@ -31,7 +32,10 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | 统一 RunError 与多错误因果 | Accepted | Not Started | Not Applicable | [Failure Design §1.7](designs/0006-failure-panic-and-shutdown.md#17-公开-runerror) |
 | M2 Position / Completion | Accepted | Not Started | Not Applicable | [Position Design](designs/0007-position-and-kafka-rebalance.md) · [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | 异步 Sink 协议 | Accepted | Not Started | Not Applicable | [Sink Design](designs/0005-sink-handoff-and-completion.md) |
-| Kafka Consumer Group / Rebalance | Accepted | Not Started | Not Applicable | [ADR-0002](decisions/0002-use-kafka-consumer-group-for-external-coordination.md) |
+| Kafka Consumer Group / Revoke 时间预算 | Accepted | Not Started | Not Applicable | [ADR-0005](decisions/0005-connector-owned-revoke-budget.md) · [Source Design §1.3.1](designs/0003-source-reader-and-admission.md#131-split-control-边界) |
+| Kafka poll / 背压 / 提交 / 控制回调 | Accepted（阶段性契约） | Not Started | Not Applicable | [Kafka Design §3](designs/0007-position-and-kafka-rebalance.md#3-kafka-客户端适配) |
+| Kafka 会话建立/恢复预算与错误分类 | Accepted | Not Started | Not Applicable | [Kafka Design §3.6](designs/0007-position-and-kafka-rebalance.md#36-会话建立与恢复) |
+| Kafka 版本适配 / 客户端上界 / 外部期限 | Discussing / 待核验 | Not Started | Not Applicable | [Kafka Design §4](designs/0007-position-and-kafka-rebalance.md#4-当前开放问题) |
 | Kafka / ClickHouse Connector | Discussing | Not Started | Not Applicable | [Roadmap M2](roadmap.md#6-m2source-position完成跟踪与生产级-sink) |
 | Dead Letter / Side Output | Planned for later | Not Started | Not Applicable | [Roadmap M4](roadmap.md#8-m4keyby分区执行与逻辑物理执行图) |
 
@@ -87,8 +91,11 @@ tracker、Kafka 或 ClickHouse 实现。
 - Runtime 不提供 `SkipRecord`、`DiscardRecord` 或 Transformation `OnError`；可忽略业务错误
   由用户函数收敛为正常零输出，未处理 error 进入 Job 级 Retry/FailJob；
 - Dead Letter 延后为显式业务输出、Side Output、分支和专用 Sink，不是 Runtime 失败终态；
-- Kafka revoke 暂停该 Source 全部新 admission，started/Sink-owned work有限收敛，默认期限
-  30 秒且受 Connector 更早 deadline 限制；eager/cooperative/lost 共用 generation 机制。
+- Kafka revoke 暂停该 Source 全部新 admission，仅对 revoked splits 有限收尾；Connector
+  提供总 deadline 与提交预留，Runtime 推导 drain 截止，handle 覆盖后续提交阶段。取消
+  独立 Runtime drain 上限，Kafka 总预算/预留初始默认分别为 30/5 秒；接口、边界与旧
+  决定的替代关系见 [Source Design §1.3.1](designs/0003-source-reader-and-admission.md#131-split-control-边界)
+  与 [ADR-0005](decisions/0005-connector-owned-revoke-budget.md)。
 - `Collector.Emit` 成功即把 Record 及其可达引用数据 ownership 转给 Runtime，失败则不转移；
   转移在每次成功 Emit 时立即发生，Runtime 不复制也不提供通用 copier/serializer，违规复用
   属于用户实现错误且结果不受保证。
@@ -158,6 +165,23 @@ tracker、Kafka 或 ClickHouse 实现。
   position 和 generation fence 分离，详见
   [Position Design §1.4](designs/0007-position-and-kafka-rebalance.md#14-work-终态success-与-permit)。
 
+- Kafka 以 franz-go 为首选候选；BlockRebalanceOnPoll 只保护 poll 到缓存登记的短窗口，
+  不等待业务完成。Connector 使用全局记录预算、满时暂停 fetch，客户端内部预取另行
+  核算；完整上界仍需证明，详见 [Kafka Design §3.1–3.2](designs/0007-position-and-kafka-rebalance.md#31-客户端候选与-poll-登记窗口)。
+- Kafka 禁用自动提交，Runtime 周期合并 safe frontier；每 Source 一个提交请求，有限
+  重试后最终失败 FailJob，revoke 暂停新普通提交并在已有请求收敛后提交冻结位置。
+  空控制回调不直接传给 Runtime；Lost 立即 fence，不等于必然 FailJob，详见
+  [Kafka Design §3.3–3.5](designs/0007-position-and-kafka-rebalance.md#33-offset-提交与-revoke-交接)。
+- Kafka `SessionRecoveryTimeout` 默认 1 分钟且必须大于零，覆盖初次建立和会话恢复；
+  同次重试不刷新预算，成功处理 assignment 后结束计时，空 assignment 也可成功。
+  错误按类型与阶段区分，最终 offset 提交不借用会话恢复预算；客户端版本信号仍待核验，
+  详见 [Kafka Design §3.6](designs/0007-position-and-kafka-rebalance.md#36-会话建立与恢复)。
+- Runtime 提供 `SourceContext.ReportFailure(error) error`，独立于业务背压接收最终 Source
+  失败；输入是根因，返回值是报告接收状态。重复报告不覆盖首因，关闭后迟到报告快速
+  返回关闭错误，统一 RunError 因果规则保持有效，详见
+  [Source Design §1.1.2](designs/0003-source-reader-and-admission.md#112-独立的最终失败报告)
+  与 [ADR-0006](decisions/0006-source-failure-reporting-and-session-recovery.md)。
+
 能力契约与依赖见 [Design Map](designs/design-map.md)，长期取舍索引见
 [Decision Index](decisions/README.md)。
 
@@ -165,15 +189,21 @@ tracker、Kafka 或 ClickHouse 实现。
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
 
-1. Kafka/ClickHouse Connector、指标、故障注入和交付保证审核。
+1. Kafka 客户端内部预取、在途 fetch 与 Connector 缓存的完整资源上界；
+2. Kafka 可靠的外部 revoke 期限、普通提交参数、旧请求串行化与会话恢复信号的版本适配核验；
+3. ClickHouse batch/flush/unknown effect、M2 指标、故障注入和交付保证审核。
 
 ## 当前唯一下一步
 
-讨论并接受 Kafka 客户端适配的 poll、pause、commit 与 control callback 执行模型。
+核验并收敛 Kafka 客户端预取的完整资源边界，以
+[Kafka Design §4.2](designs/0007-position-and-kafka-rebalance.md#42-客户端预取的完整资源边界)
+为起点，覆盖内部缓冲、在途请求和较大/压缩批次；不能只以 Connector 缓存容量证明整体有界。
 
 ## 最近验证
 
-- `go test ./...`：通过；
+验证日期：2026-09-07。变更范围为文档契约与交接记录，未新增 Runtime 或 Connector 实现。
+
+- `go test ./...`：现有 Operator 基线通过，不构成新 Source/Kafka 契约的实现验证；
 - `git diff --check`：通过；
-- Markdown 相对链接目标检查：通过；
+- Markdown 相对链接目标与章节锚点检查：通过；
 - Runtime/fault/race benchmark：尚不适用或尚未运行。

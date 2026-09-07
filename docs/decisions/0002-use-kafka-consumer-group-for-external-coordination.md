@@ -1,10 +1,14 @@
 # 0002：早期多实例 Kafka Source 使用 Consumer Group 协调
 
-状态：Accepted
+状态：Superseded by [ADR-0005](0005-connector-owned-revoke-budget.md)
+
+替代说明（2026-09-07）：Consumer Group 协调方向保留；新的决定收紧为禁用自动提交，并以
+Connector 总收尾预算和提交预留替代独立 Runtime drain 上限。以下正文保留原决定历史，
+当前契约以 ADR-0005 及其链接的 Design 为准。
 
 日期：2026-08-01
 
-最后更新：2026-08-24
+最后更新：2026-09-07（仅替代标记；原决定正文最后更新于 2026-08-24）
 
 影响阶段：M2+
 
