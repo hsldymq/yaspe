@@ -896,7 +896,7 @@ Checkpoint 提供一致恢复基础，不自动使任意外部 Sink exactly-once
 ## 9. 当前阶段结构：M1
 
 定义平面的线性 Job 构建已实现，执行平面已有 Record、Collector、Operator 和内置转换。
-公共 Source/Sink 协议已定义，Memory Connector、运行期调度与生命周期仍待实现。
+Memory Source 的有界读取、生产控制与生命周期已实现；Memory Sink、Runtime 调度与生命周期协调仍待实现。
 
 具体代码、测试、三维状态和唯一下一步由 [Current Status](status.md#当前代码事实) 维护；
 本节不复制类型清单。M1 目标结构见下一节，不表示全部组件已经实现。
