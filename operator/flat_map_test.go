@@ -28,7 +28,7 @@ func (c *failingAtCollector[T]) Emit(record yaspe.Record[T]) error {
 	return nil
 }
 
-// TestFlatMapEmitsAllValuesInOrder 验证简单 transform 的多个结果会按切片顺序输出。
+// TestFlatMapEmitsAllValuesInOrder 验证简单 transform 的多个结果会按切片顺序输出.
 func TestFlatMapEmitsAllValuesInOrder(t *testing.T) {
 	op := operator.NewFlatMap(func(value string) []string {
 		return strings.Fields(value)
@@ -54,7 +54,7 @@ func TestFlatMapEmitsAllValuesInOrder(t *testing.T) {
 	}
 }
 
-// TestFlatMapEmitsNothingForEmptyResult 验证 transform 返回空切片时 FlatMap 会正常结束且不输出记录。
+// TestFlatMapEmitsNothingForEmptyResult 验证 transform 返回空切片时 FlatMap 会正常结束且不输出记录.
 func TestFlatMapEmitsNothingForEmptyResult(t *testing.T) {
 	op := operator.NewFlatMap(func(int) []string {
 		return nil
@@ -74,7 +74,7 @@ func TestFlatMapEmitsNothingForEmptyResult(t *testing.T) {
 	}
 }
 
-// TestFlatMapWithContextPassesContextToTransform 验证完整版 FlatMap 会把 Process 的 context 传给 transform。
+// TestFlatMapWithContextPassesContextToTransform 验证完整版 FlatMap 会把 Process 的 context 传给 transform.
 func TestFlatMapWithContextPassesContextToTransform(t *testing.T) {
 	type contextKey struct{}
 
@@ -96,7 +96,7 @@ func TestFlatMapWithContextPassesContextToTransform(t *testing.T) {
 	}
 }
 
-// TestFlatMapWithContextDoesNotEmitWhenTransformFails 验证 transform 失败时 FlatMap 会返回错误且不输出记录。
+// TestFlatMapWithContextDoesNotEmitWhenTransformFails 验证 transform 失败时 FlatMap 会返回错误且不输出记录.
 func TestFlatMapWithContextDoesNotEmitWhenTransformFails(t *testing.T) {
 	transformErr := errors.New("transform failed")
 	op := operator.NewFlatMapWithContext(func(
@@ -118,7 +118,7 @@ func TestFlatMapWithContextDoesNotEmitWhenTransformFails(t *testing.T) {
 	}
 }
 
-// TestFlatMapStopsAfterEmitFailure 验证 Emit 中途失败时此前输出会保留，后续输出不会继续发送。
+// TestFlatMapStopsAfterEmitFailure 验证 Emit 中途失败时此前输出会保留, 后续输出不会继续发送.
 func TestFlatMapStopsAfterEmitFailure(t *testing.T) {
 	emitErr := errors.New("emit failed")
 	op := operator.NewFlatMap(func(int) []string {

@@ -24,7 +24,7 @@ func (c *collectingCollector[T]) Emit(record yaspe.Record[T]) error {
 	return nil
 }
 
-// TestMapTransformsRecord 验证 Map 会转换输入值，并向 Collector 输出一条记录。
+// TestMapTransformsRecord 验证 Map 会转换输入值, 并向 Collector 输出一条记录.
 func TestMapTransformsRecord(t *testing.T) {
 	op := operator.NewMap(func(value int) string {
 		return strconv.Itoa(value)
@@ -50,7 +50,7 @@ func TestMapTransformsRecord(t *testing.T) {
 	}
 }
 
-// TestMapDoesNotEmitWhenTransformFails 验证转换失败时 Map 会返回错误且不产生输出。
+// TestMapDoesNotEmitWhenTransformFails 验证转换失败时 Map 会返回错误且不产生输出.
 func TestMapDoesNotEmitWhenTransformFails(t *testing.T) {
 	transformErr := errors.New("transform failed")
 
@@ -74,7 +74,7 @@ func TestMapDoesNotEmitWhenTransformFails(t *testing.T) {
 	}
 }
 
-// TestMapReturnsEmitFailure 验证 Collector 拒绝输出时 Map 会向调用方传播该错误。
+// TestMapReturnsEmitFailure 验证 Collector 拒绝输出时 Map 会向调用方传播该错误.
 func TestMapReturnsEmitFailure(t *testing.T) {
 	emitErr := errors.New("emit failed")
 
@@ -93,7 +93,7 @@ func TestMapReturnsEmitFailure(t *testing.T) {
 	}
 }
 
-// TestMapPassesContextToTransform 验证 Map 会将 Process 收到的 context 传给转换函数。
+// TestMapPassesContextToTransform 验证 Map 会将 Process 收到的 context 传给转换函数.
 func TestMapPassesContextToTransform(t *testing.T) {
 	type contextKey struct{}
 

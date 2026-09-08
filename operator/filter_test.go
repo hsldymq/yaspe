@@ -9,7 +9,7 @@ import (
 	"github.com/hsldymq/yaspe/operator"
 )
 
-// TestFilterEmitsMatchingRecord 验证简单 predicate 匹配时 Filter 会输出原记录。
+// TestFilterEmitsMatchingRecord 验证简单 predicate 匹配时 Filter 会输出原记录.
 func TestFilterEmitsMatchingRecord(t *testing.T) {
 	op := operator.NewFilter(func(value int) bool {
 		return value > 0
@@ -31,7 +31,7 @@ func TestFilterEmitsMatchingRecord(t *testing.T) {
 	}
 }
 
-// TestFilterDoesNotEmitNonMatchingRecord 验证简单 predicate 不匹配时 Filter 会正常结束且不输出记录。
+// TestFilterDoesNotEmitNonMatchingRecord 验证简单 predicate 不匹配时 Filter 会正常结束且不输出记录.
 func TestFilterDoesNotEmitNonMatchingRecord(t *testing.T) {
 	op := operator.NewFilter(func(value int) bool {
 		return value > 0
@@ -52,7 +52,7 @@ func TestFilterDoesNotEmitNonMatchingRecord(t *testing.T) {
 	}
 }
 
-// TestFilterWithContextPassesContextToPredicate 验证完整版 Filter 会把 Process 的 context 传给 predicate。
+// TestFilterWithContextPassesContextToPredicate 验证完整版 Filter 会把 Process 的 context 传给 predicate.
 func TestFilterWithContextPassesContextToPredicate(t *testing.T) {
 	type contextKey struct{}
 
@@ -79,7 +79,7 @@ func TestFilterWithContextPassesContextToPredicate(t *testing.T) {
 	}
 }
 
-// TestFilterWithContextDoesNotEmitWhenPredicateFails 验证 predicate 失败时 Filter 会返回错误且不输出记录。
+// TestFilterWithContextDoesNotEmitWhenPredicateFails 验证 predicate 失败时 Filter 会返回错误且不输出记录.
 func TestFilterWithContextDoesNotEmitWhenPredicateFails(t *testing.T) {
 	predicateErr := errors.New("predicate failed")
 	op := operator.NewFilterWithContext(func(
@@ -101,7 +101,7 @@ func TestFilterWithContextDoesNotEmitWhenPredicateFails(t *testing.T) {
 	}
 }
 
-// TestFilterReturnsEmitFailure 验证匹配记录无法提交给 Collector 时 Filter 会传播 Emit 错误。
+// TestFilterReturnsEmitFailure 验证匹配记录无法提交给 Collector 时 Filter 会传播 Emit 错误.
 func TestFilterReturnsEmitFailure(t *testing.T) {
 	emitErr := errors.New("emit failed")
 	op := operator.NewFilter(func(int) bool {
