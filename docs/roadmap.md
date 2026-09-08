@@ -83,7 +83,7 @@ M11 分布式执行（探索）
 
 ## 4. M0：核心语义与项目基线
 
-状态：Current
+状态：Completed
 
 ### 目标
 
@@ -129,7 +129,7 @@ M0 检查行为契约和验收方法是否收敛，不要求尚未实现的 Runt
 
 ## 5. M1：有界并发的 Stateless Runtime
 
-状态：Planned
+状态：Current
 
 ### 目标
 
@@ -672,9 +672,8 @@ Superseded   被新的里程碑或方案替代
 
 ## 18. 当前下一步
 
-当前处于 M0。主要执行契约、M2 最小指标与故障/交付验收方案已接受，接下来按
-[Current Status](status.md) 完成 M0 收尾检查，核对文档、代码、测试和已知契约问题后
-决定是否进入 M1。尚未完成的实现验证由
+当前处于 M1。M0 设计与基线已收敛，M1 Job Definition 已实现；接下来按
+[Current Status](status.md) 推进 Memory Connector 和 Runtime 最小链路。尚未完成的实现验证由
 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-设计收敛与验证断点)
 单独跟踪，不自动标记已验证或里程碑完成。
 

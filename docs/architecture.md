@@ -2,7 +2,7 @@
 
 文档状态：Living Document  
 最后更新：2026-09-08
-当前里程碑：M0 — 核心语义与项目基线  
+当前里程碑：M1 — 有界并发的 Stateless Runtime
 关联文档：[Vision](vision.md) · [Roadmap](roadmap.md) · [Current Status](status.md)
 
 ## 1. 文档目的
@@ -85,7 +85,7 @@ Definition Plane 让用户表达“计算什么”，不直接决定 goroutine�
 
 ### 5.1 Job Definition
 
-状态：`Planned`，M1 提供最小形式，M4 正式图化。
+状态：`Current`，M1 线性定义与 Build 已实现；Runtime 实例化待实现，M4 正式图化。
 
 职责：
 
@@ -132,7 +132,7 @@ Run 创建一个 Source、每条 lane 一套 Operator Chain 和一个共享 Sink
 
 ### 5.2 Typed Stream / DSL
 
-状态：`Planned`。
+状态：`Current`，M1 构建 API 已实现，见 [Job Design](designs/0002-job-definition-and-runtime-instantiation.md)。
 
 职责：
 
@@ -893,52 +893,13 @@ Checkpoint 提供一致恢复基础，不自动使任意外部 Sink exactly-once
 - 不为缺少事务或幂等能力的外部系统制造虚假 exactly-once；
 - 不把 checkpoint 成功简单等同于外部副作用原子提交。
 
-## 9. 当前阶段结构：M0
+## 9. 当前阶段结构：M1
 
-M0 当前代码结构：
+定义平面的线性 Job 构建已实现，执行平面已有 Record、Collector、Operator 和内置转换。
+公共 Source/Sink 协议已定义，Memory Connector、运行期调度与生命周期仍待实现。
 
-```text
-package yaspe
-├── Record[T]
-├── Collector[T]
-└── Operator[I, O]
-
-package operator
-└── Map[I, O]
-```
-
-当前调用关系：
-
-```text
-Test / future Runtime
-      │ Process(ctx, Record[I], Collector[O])
-      v
-Map[I, O]
-      │ transform
-      v
-MapFunc[I, O]
-      │ Emit(Record[O])
-      v
-Collector[O]
-```
-
-M0 应实现：
-
-- 最小 `Record`；
-- `Operator` 和 `Collector` 契约；
-- Map 的正常、transform 失败、Emit 失败和 context 传播测试；
-- 核心执行模型阶段设计；
-- 关键 ADR 和文档入口。
-
-M0 不应实现：
-
-- Engine 巨型接口；
-- Kafka；
-- Worker Pool；
-- checkpoint；
-- 状态；
-- 完整 DAG；
-- 为未来组件创建空 package。
+具体代码、测试、三维状态和唯一下一步由 [Current Status](status.md#当前代码事实) 维护；
+本节不复制类型清单。M1 目标结构见下一节，不表示全部组件已经实现。
 
 ## 10. M1 目标结构：有界并发 Stateless Runtime
 

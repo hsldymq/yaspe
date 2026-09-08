@@ -1,7 +1,7 @@
 # 0002：Job Definition 与 Runtime 实例化
 
 状态：Accepted
-最后更新：2026-08-27
+最后更新：2026-09-08
 适用阶段：M1+
 依赖：[核心执行模型](0001-core-execution-model.md)
 
@@ -11,7 +11,8 @@
 
 ## 1. Type-state Job API
 
-第一版使用 Go 1.27 泛型方法和不同公开类型表达构建阶段：
+第一版使用 Go 1.27 泛型方法和不同公开类型表达构建阶段。M1 的定义期 API 已实现于
+[job.go](../../job.go) 与 [stream.go](../../stream.go)；Retry 仍属于尚未实现的 M2 能力：
 
 ```text
 NewJob(name) → JobDraft
@@ -23,7 +24,7 @@ Retry（可选）→ JobBuilder
 Build → Job
 ```
 
-概念调用形态为：
+构建调用形态为：
 
 ```go
 job, err := yaspe.NewJob("lightning-log-filter").
@@ -34,9 +35,6 @@ job, err := yaspe.NewJob("lightning-log-filter").
     Transform(customOperatorFactory).
     SinkTo(sinkFactory).
     Build()
-
-runtime := yaspe.NewRuntime(options)
-err = runtime.Run(ctx, job)
 ```
 
 `JobDraft` 只保存尚未绑定 Source 的 Job 级定义，只提供 `From`、`FromFunc` 和将来确有需求的
@@ -67,25 +65,13 @@ M1 的每个最终 Job 仍只允许一个 Source、零个或多个 Operator 和�
 
 ## 2. Factory 与 Connector Builder
 
-Job Definition 保存 Factory，不保存某次运行的活动 Source、Operator 或 Sink 实例。概念
-接口为：
+Job Definition 保存 Factory，不保存某次运行的活动 Source、Operator 或 Sink 实例。
+具体接口与函数适配见 [factory.go](../../factory.go)；工厂返回的 Source、Operator、Sink
+接口分别见 [source.go](../../source.go)、[operator.go](../../operator.go)、[sink.go](../../sink.go)。
+接口定义已存在，不代表 Runtime 生命周期、Source control 或 Sink completion 行为已实现。
 
-```go
-type SourceFactory[T any] interface {
-    Create() (Source[T], error)
-}
-
-type OperatorFactory[I, O any] interface {
-    Create() (Operator[I, O], error)
-}
-
-type SinkFactory[T any] interface {
-    Create() (Sink[T], error)
-}
-```
-
-`FromFunc`、`TransformFunc`、`SinkToFunc` 接收对应的无参数 factory function。Runtime 内部把
-函数形式适配为同一 Factory 协议。
+`FromFunc`、`TransformFunc`、`SinkToFunc` 接收对应的无参数 factory function，在定义期
+适配为同一 Factory 协议；真正的 Create 调用仍留到 Runtime 启动时。
 
 Connector 可以提供自己的 Builder 收集 brokers、topic、路径或批量参数；Builder 的
 `Build` 应复制并冻结配置，产出可保存到 Job 的 Factory。两者不能混称：Builder 负责形成
@@ -122,14 +108,8 @@ Sink。内置 Map、Filter、FlatMap 为每条 lane 创建独立包装 Operator�
 
 ## 4. Operator 可选生命周期
 
-基础 `Operator[I, O]` 仍只要求 `Process`。需要一次初始化和清理的 Operator 可以额外实现：
-
-```go
-type OperatorLifecycle interface {
-    Open(ctx context.Context) error
-    Close(ctx context.Context) error
-}
-```
+基础 `Operator[I, O]` 仍只要求 `Process`。需要一次初始化和清理的 Operator 可以额外实现
+[OperatorLifecycle](../../operator.go)。接口已定义，以下运行期生命周期规则待 Runtime 实现。
 
 Runtime 不并发调用同一实例的 Open、Process 和 Close。每个实例最多成功 Open 一次；Close
 开始后不再调用 Process。Runtime 只保证 Close 已成功 Open 的实例；Open 在部分初始化后
@@ -173,7 +153,7 @@ M1 Build 接受 Source 直接连接 Sink，也就是零个 Operator。它必须�
 - 空或全空白 Job 名称；
 - `JobDraft`、`Stream` 或 `JobBuilder` 的非法零值；
 - nil Source、Operator、Sink Factory 或 nil Func；
-- finite/unlimited Retry 模式冲突、无有效有限预算或非法 backoff/jitter 参数；
+- M2 增加 Retry 配置时，还须拒绝 finite/unlimited 模式冲突、无有效有限预算或非法 backoff/jitter 参数；
 - 缺失、重复、悬空或顺序损坏的节点；
 - 不能形成唯一 Source、线性 Chain 和唯一 Sink 的结构；
 - yaspe 私有 adapter 的类型元信息自相矛盾。
@@ -226,3 +206,16 @@ err := runtime.Run(ctx, job)
 Runtime options 持有 Parallelism、shutdown timeout、metrics、clock 等运行策略；这些状态不
 写回 Job Definition。Retry/FailJob 属于 Job 的失败与副作用语义，由不可变 Job Definition
 持有，不是 Runtime 资源 option；同一 Job 被不同 Runtime 执行时默认保持相同失败语义。
+
+## 9. 实现与验证证据
+
+M1 定义期能力已实现：type-state fluent API、Factory 保存、内置转换工厂、不可变派生、
+Build 校验和独立拓扑快照。实现以 [job.go](../../job.go)、[stream.go](../../stream.go) 和
+[私有 adapter](../../job_adapter.go) 为准，不在本文复制内部类型和存储布局。
+
+- [Job 测试](../../job_test.go)：构建惰性、非法零值/nil、损坏拓扑、独立快照、局部结构序号和并发派生/Build；
+- [编译契约测试](../../job_compile_test.go)：有效跨类型链路可编译，非法阶段调用及不匹配类型被编译器拒绝；
+- [转换测试](../../stream_test.go)：零/多输出、context 与错误传播、首次 Emit 失败停止，以及每次工厂创建独立包装实例。
+
+上述测试已通过 race detector；`go vet ./...` 通过。运行实例创建与启动回滚、Runtime 调度、
+M2 Retry、位置和异步 completion 尚未实现或验证，不能由定义期测试推断已满足。

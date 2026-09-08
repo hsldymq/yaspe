@@ -7,13 +7,13 @@
 
 ## 当前里程碑
 
-M0 — 核心语义与项目基线。
+M1 — 有界并发的 Stateless Runtime。M0 核心语义与项目基线已完成。
 
 ## 当前目标
 
-先收敛所有影响 M1/M2 公共 API、ownership、并发和恢复正确性的设计，再开始 Runtime、
-Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公开保证的数据结构可以由
-受约束原型细化。
+按已接受契约实现 Memory Source → Operator Chain → Memory Sink 最小链路，并验证有界
+调度、ownership、FailJob、取消与回收。M1 Job Definition 已完成；Memory Connector 和 Runtime
+尚未实现。Kafka、ClickHouse 与 Operator Retry 留在 M2。
 
 ## 三维能力状态
 
@@ -26,7 +26,7 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | M2 Source lifecycle / split control / position commit API | Accepted | Not Started | Not Applicable | [Source Design](designs/0003-source-reader-and-admission.md) |
 | SourceContext 最终失败报告 | Accepted | Not Started | Not Applicable | [Source Design §1.1.2](designs/0003-source-reader-and-admission.md#112-独立的最终失败报告) |
 | M1 同步 Memory Sink 语义 | Accepted | Not Started | Not Applicable | [Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink) |
-| 线性 Job Definition | Accepted | Not Started | Not Applicable | [Job Design](designs/0002-job-definition-and-runtime-instantiation.md) |
+| M1 线性 Job Definition | Accepted | Implemented | Race Tested | [Job Design](designs/0002-job-definition-and-runtime-instantiation.md) |
 | M1 Stateless Runtime | Accepted | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
 | M2 Operator work Retry | Accepted | Not Started | Not Applicable | [Failure Design §1](designs/0006-failure-panic-and-shutdown.md#1-失败暂停与恢复) |
 | 统一 RunError 与多错误因果 | Accepted | Not Started | Not Applicable | [Failure Design §1.7](designs/0006-failure-panic-and-shutdown.md#17-公开-runerror) |
@@ -47,26 +47,19 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 
 ## 当前代码事实
 
-```text
-package yaspe
-├── Record[T]
-├── Collector[T]
-└── Operator[I, O]
+现有实现及验证入口：
 
-package operator
-├── Map[I, O]
-├── Filter[T]
-└── FlatMap[I, O]
-```
+- [Record](../record.go)、[Operator / Collector](../operator.go) 与 [operator 包](../operator/)：
+  Map、Filter、FlatMap 及其正常输出、错误与 context 传播测试；
+- [Job Definition](../job.go)、[fluent 转换](../stream.go)、[Factory](../factory.go) 与
+  [私有 adapter](../job_adapter.go)：已实现不可变构建、类型衔接和拓扑校验；
+  [Job 测试](../job_test.go)、[编译契约测试](../job_compile_test.go) 和 [转换测试](../stream_test.go)
+  覆盖构建惰性、独立快照、并发派生、非法结构/类型和内置转换行为；
+- [Source](../source.go)、[Sink](../sink.go) 和 OperatorLifecycle 目前只有公共协议定义，
+  为 Factory 类型提供边界；没有运行期控制、completion 或生命周期实现。
 
-已有单元测试覆盖：
-
-- Map 的正常转换、transform error、Emit error 和 context 传递；
-- Filter 的匹配/不匹配、predicate error、Emit error 和 context 传递；
-- FlatMap 的零/多输出、输出顺序、transform error 和中途 Emit error。
-
-尚不存在 JobBuilder、Transformation、Runtime、Source/Sink Connector、position、completion
-tracker、Kafka 或 ClickHouse 实现。
+尚不存在 Runtime、Memory Source/Sink Connector、position/completion tracker、Kafka 或
+ClickHouse 生产实现。定义期测试不证明端到端运行、回收或交付保证。
 
 [franz-go v1.21.6 验证附件](verification/franz-go-v1.21.6/README.md) 是独立 Go module，包含
 七项客户端模拟测试及固定依赖；不属于上述生产实现，根模块测试也不包含它。已观察行为
@@ -250,8 +243,8 @@ at-least-once 带 Source 重放与数据保留、Sink 确认配置、故障消�
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-设计收敛与验证断点)。当前顺序：
 
-1. M0 收尾检查：核对 Roadmap 完成标准、设计一致性、当前代码/测试与工作区，确认
-   是否具备进入 M1 最小实现链路的条件；当前里程碑仍为 M0，尚未标记完成；
+1. M1 实现：Job Definition 已通过构建、编译契约与并发测试；接下来实现 Memory Source / Sink，
+   再接入 Runtime 生命周期、调度和 FailJob，完整 Runtime 验收仍待完成；
 2. Kafka 主要设计已收敛，完整适配验证仍待完成：真实 broker、多实例 eager/cooperative、
    提交超时/重试及旧请求、恢复 timer/迟到事件、默认预取组合和大消息/长期背压。
    已通过的七项与证据限制见 [验证附件](verification/franz-go-v1.21.6/README.md)，详细矩阵
@@ -262,17 +255,18 @@ at-least-once 带 Source 重放与数据保留、Sink 确认配置、故障消�
 
 ## 当前唯一下一步
 
-执行 M0 收尾检查，依据 [Roadmap M0 完成标准](roadmap.md#4-m0核心语义与项目基线) 和
-[Verification Design §3](designs/0008-runtime-verification-and-observability.md#3-实现前审核点)
-核对设计、实现与证据；通过后进入 M1 的 Memory Source → Operator Chain → Memory Sink
-最小实现链路。完整实现故障测试随对应能力补齐，不作为尚未编码前必须全部通过的门槛。
+实现 M1 Memory Source 与 producer Controller，落实有界 Submit、非阻塞 TryRead、
+Available 通知、Finish/Fail/Close 和 ownership 竞态；具体契约见
+[Source Design §1.7](designs/0003-source-reader-and-admission.md#17-m1-memory-source)。
+随后实现同步 Memory Sink，并接入 Runtime 最小链路。
 
 ## 最近验证
 
-验证日期：2026-09-08。变更范围为文档契约、交接记录与独立客户端验证附件，未新增 Runtime
-或 Connector 生产实现。
+验证日期：2026-09-08。M1 Job Definition 已通过定义期验证，Runtime 和 Connector 行为仍待实现。
 
-- `go test ./...`：2026-09-07 现有 Operator 基线通过，不构成新 Connector 契约的实现验证；
+- `go test -count=1 ./...` 与 `go test -race -count=1 ./...`：Job 构建、公开 API 编译契约、
+  并发派生/Build、fluent 内置转换与已有 Operator 测试通过；
+- `go vet ./...`：通过；
 - 2026-09-07 在 Kafka 版本验证附件运行 `go test -race -v -count=1 -timeout 60s ./...`：七项通过，
   原始输出和限定范围见 [验证附件](verification/franz-go-v1.21.6/README.md)；
 - 2026-09-08 在 ClickHouse 附件运行 `python3 run_probe.py`，原始 v2.48.0 驱动副本上七项
