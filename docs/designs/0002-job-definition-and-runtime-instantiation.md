@@ -15,7 +15,7 @@
 [job.go](../../job.go) 与 [stream.go](../../stream.go)；Retry 仍属于尚未实现的 M2 能力：
 
 ```text
-NewJob(name) → JobDraft
+NewJobDraft(name) → JobDraft
 From / FromFunc → Stream[T]
 Map / Filter / FlatMap → Stream[O]
 Transform / TransformFunc → Stream[O]
@@ -27,7 +27,7 @@ Build → Job
 构建调用形态为：
 
 ```go
-job, err := yaspe.NewJob("lightning-log-filter").
+job, err := yaspe.NewJobDraft("lightning-log-filter").
     From(sourceFactory).
     Map(parse).
     Filter(validate).
@@ -47,7 +47,7 @@ Job 配置与 `Build`。M2 Retry 只在该阶段设置；`JobDraft` 和 `Stream[
 因此以下结构错误由编译器排除：
 
 ```go
-yaspe.NewJob("x").Build()  // JobDraft 没有 Build
+yaspe.NewJobDraft("x").Build()  // JobDraft 没有 Build
 stream.SinkTo(sink).Map(f) // JobBuilder 没有 Map
 ```
 
@@ -55,7 +55,7 @@ stream.SinkTo(sink).Map(f) // JobBuilder 没有 Map
 路径，不会修改已经 SinkTo 或 Build 的定义：
 
 ```go
-base := yaspe.NewJob("base").From(sourceFactory)
+base := yaspe.NewJobDraft("base").From(sourceFactory)
 jobA, err := base.Map(parseA).SinkTo(sinkA).Build()
 jobB, err := base.Map(parseB).SinkTo(sinkB).Build()
 ```
