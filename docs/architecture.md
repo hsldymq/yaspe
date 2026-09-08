@@ -1,7 +1,7 @@
 # yaspe Living Architecture
 
 文档状态：Living Document  
-最后更新：2026-09-07
+最后更新：2026-09-08
 当前里程碑：M0 — 核心语义与项目基线  
 关联文档：[Vision](vision.md) · [Roadmap](roadmap.md) · [Current Status](status.md)
 
@@ -609,6 +609,15 @@ Collector
 Sink
     拓扑中的终端处理角色，可能具有外部副作用
 ```
+
+ClickHouse Connector 的具体适配见 [ClickHouse Design](designs/0009-clickhouse-connector.md)：
+业务提供目标表、列映射和写入设置，Runtime 不理解表引擎。Connector 本地组批、后台执行
+完整 INSERT，并按实际配置下的服务端确认报告结果，不自动推断所有 shard/副本的持久化。
+驱动基线为 clickhouse-go/v2 v2.48.0；每次尝试使用新的 batch/context，重试保留稳定数据
+和历史不确定效果。一个 SinkItem 接管后只转换一次并对应一行，业务提供目标表、
+有序列和值；同一 Sink settings 固定，多目标按表和列顺序分组，共享 item 容量与写入
+并发。默认值和完整规则见 ClickHouse Design §4。七项驱动白盒测试不代表 Connector
+输入映射、组批调度或真实服务端交付保证已验证。
 
 ### 7.7 Runtime
 

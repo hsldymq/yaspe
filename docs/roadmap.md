@@ -1,7 +1,7 @@
 # yaspe Roadmap
 
 文档状态：Living Document  
-最后更新：2026-09-07
+最后更新：2026-09-08
 关联文档：[vision.md](vision.md) · [architecture.md](architecture.md) · [status.md](status.md)
 
 ## 1. Roadmap 的目的
@@ -204,6 +204,9 @@ M11 分布式执行（探索）
 - 有界异步批量 Sink；
 - batch flush、成功、部分失败和关闭语义；
 - ClickHouse Sink Connector 的第一版；
+- ClickHouse 目标表及写入设置由业务提供，Connector 按实际配置的确认边界执行组批、
+  重试与有限关闭；一 item 一行、接管后转换、多目标组批与初始配置的完整契约见
+  [ClickHouse Design](designs/0009-clickhouse-connector.md)，实现验证仍须完成；
 - 有上限的 Retry 策略及 backoff；
 - Source lag、in-flight、batch 和 commit 指标；
 - 在指定 position 和 batch 阶段进行故障注入。

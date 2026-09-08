@@ -1,11 +1,14 @@
 # 0005：Sink Handoff 与 Completion
 
 状态：Accepted
-最后更新：2026-08-27
+最后更新：2026-09-08
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Operator Attempt](0004-operator-attempt-and-collector.md)
 
 本文是 terminal output 整组交接、Memory Sink、异步 completion、有限关闭与迟到隔离的权威契约。
+
+ClickHouse 的业务配置确认边界、Native batch 生命周期与具体重试策略由
+[ClickHouse Design](0009-clickhouse-connector.md) 维护，不改变本文通用责任转移与完成协议。
 
 ## 1. Sink 交接与 Completion
 

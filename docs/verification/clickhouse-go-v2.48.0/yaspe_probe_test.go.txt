@@ -1,0 +1,299 @@
+package clickhouse
+
+import (
+	"bytes"
+	"context"
+	"errors"
+	cp "github.com/ClickHouse/ch-go/proto"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/column"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/ClickHouse/clickhouse-go/v2/lib/proto"
+	"io"
+	"log/slog"
+	"net"
+	"os"
+	"reflect"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// Controlled transport for original native batch methods, not a ClickHouse server.
+type probeConn struct {
+	mu       sync.Mutex
+	writes   [][]byte
+	packets  chan []byte
+	pending  []byte
+	closed   chan struct{}
+	once     sync.Once
+	reading  chan struct{}
+	readOnce sync.Once
+}
+
+func (c *probeConn) Read(p []byte) (int, error) {
+	c.readOnce.Do(func() { close(c.reading) })
+	if len(c.pending) == 0 {
+		select {
+		case c.pending = <-c.packets:
+		case <-c.closed:
+			return 0, net.ErrClosed
+		}
+	}
+	n := copy(p, c.pending)
+	c.pending = c.pending[n:]
+	return n, nil
+}
+func (c *probeConn) Write(p []byte) (int, error) {
+	select {
+	case <-c.closed:
+		return 0, net.ErrClosed
+	default:
+	}
+	c.mu.Lock()
+	c.writes = append(c.writes, bytes.Clone(p))
+	c.mu.Unlock()
+	return len(p), nil
+}
+func (c *probeConn) Close() error         { c.once.Do(func() { close(c.closed) }); return nil }
+func (c *probeConn) LocalAddr() net.Addr  { return &net.TCPAddr{Port: 1} }
+func (c *probeConn) RemoteAddr() net.Addr { return &net.TCPAddr{Port: 2} }
+
+// Deliberately no socket deadline simulation: these probes exercise cancellation.
+func (c *probeConn) SetDeadline(time.Time) error      { return nil }
+func (c *probeConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *probeConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *probeConn) snapshot() [][]byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([][]byte(nil), c.writes...)
+}
+
+type probe struct {
+	transport     *probeConn
+	c             *connect
+	b             *batch
+	releases      atomic.Int32
+	releaseErrors chan error
+}
+
+func newProbe(t *testing.T, ctx context.Context) *probe {
+	t.Helper()
+	pc := &probeConn{packets: make(chan []byte, 8), closed: make(chan struct{}), reading: make(chan struct{})}
+	c := &connect{opt: &Options{}, conn: pc, logger: slog.New(slog.NewTextHandler(io.Discard, nil)), buffer: new(cp.Buffer), reader: cp.NewReader(pc), revision: 0, compression: CompressionNone, readTimeout: time.Second, maxCompressionBuffer: 1 << 30}
+	c.server.Timezone = time.UTC
+	p := &probe{transport: pc, c: c, releaseErrors: make(chan error, 8)}
+	block := proto.NewBlock()
+	if err := block.AddColumn("value", column.Type("UInt64")); err != nil {
+		t.Fatal(err)
+	}
+	p.b = &batch{ctx: ctx, query: "INSERT INTO t (value)", conn: c, block: block, connRelease: func(_ *connect, err error) { p.release(err) }, onProcess: new(onProcess)}
+	t.Cleanup(func() { pc.Close() })
+	return p
+}
+func (p *probe) release(err error) {
+	p.releases.Add(1)
+	p.releaseErrors <- err
+	if err != nil {
+		_ = p.c.close()
+	}
+}
+func probeWait[T any](t *testing.T, ch <-chan T) T {
+	t.Helper()
+	select {
+	case v := <-ch:
+		return v
+	case <-time.After(3 * time.Second):
+		t.Fatal("barrier timeout")
+		var zero T
+		return zero
+	}
+}
+func appendProbe(t *testing.T, b driver.Batch, values ...uint64) {
+	t.Helper()
+	for _, v := range values {
+		if err := b.Append(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+func rowsWritten(t *testing.T, c *probeConn) []int {
+	t.Helper()
+	var rows []int
+	for _, w := range c.snapshot() {
+		r := cp.NewReader(bytes.NewReader(w))
+		packet, err := r.ReadByte()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if packet != proto.ClientData {
+			continue
+		}
+		if _, err = r.Str(); err != nil {
+			t.Fatal(err)
+		}
+		block := proto.NewBlock()
+		if err = block.Decode(r, 0); err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, block.Rows())
+	}
+	return rows
+}
+
+func TestProbeSendWaitsForAcknowledgement(t *testing.T) {
+	p := newProbe(t, context.Background())
+	appendProbe(t, p.b, 11, 22)
+	if len(p.transport.snapshot()) != 0 {
+		t.Fatal("Append wrote data")
+	}
+	result := make(chan error, 1)
+	go func() { result <- p.b.Send() }()
+	probeWait(t, p.transport.reading)
+	select {
+	case err := <-result:
+		t.Fatalf("Send returned without final response: %v", err)
+	default:
+	}
+	p.transport.packets <- []byte{proto.ServerEndOfStream}
+	if err := probeWait(t, result); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowsWritten(t, p.transport); !reflect.DeepEqual(got, []int{2, 0}) {
+		t.Fatalf("blocks=%v", got)
+	}
+	if !p.b.IsSent() || p.releases.Load() != 1 {
+		t.Fatal("batch not finalized/released exactly once")
+	}
+	t.Log("Append stayed local; Send wrote two rows and terminator, then waited for EOS")
+}
+func TestProbeCloseDoesNotSendBufferedRows(t *testing.T) {
+	p := newProbe(t, context.Background())
+	appendProbe(t, p.b, 11, 22)
+	p.transport.packets <- []byte{proto.ServerEndOfStream}
+	if err := p.b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if got := rowsWritten(t, p.transport); !reflect.DeepEqual(got, []int{0}) {
+		t.Fatalf("Close sent rows: %v", got)
+	}
+	if !p.b.IsSent() {
+		t.Fatal("Close did not finalize")
+	}
+	if err := p.b.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if p.releases.Load() != 1 {
+		t.Fatal("Close released more than once")
+	}
+	t.Log("Close sent only an empty terminator; IsSent=true does not prove rows were sent")
+}
+func TestProbeAbortDoesNotSendRows(t *testing.T) {
+	p := newProbe(t, context.Background())
+	appendProbe(t, p.b, 11, 22)
+	if err := p.b.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	if len(p.transport.snapshot()) != 0 {
+		t.Fatal("Abort wrote data")
+	}
+	if err := probeWait(t, p.releaseErrors); !errors.Is(err, os.ErrProcessDone) {
+		t.Fatalf("release error=%v", err)
+	}
+	if !p.b.IsSent() {
+		t.Fatal("Abort did not finalize")
+	}
+	if err := p.b.Abort(); !errors.Is(err, ErrBatchAlreadySent) {
+		t.Fatalf("second Abort=%v", err)
+	}
+	if p.releases.Load() != 1 {
+		t.Fatal("Abort released more than once")
+	}
+	t.Log("Abort discarded unsent rows and released with an error; not a remote rollback")
+}
+func TestProbeCancelDuringSend(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := newProbe(t, ctx)
+	appendProbe(t, p.b, 11, 22)
+	result := make(chan error, 1)
+	go func() { result <- p.b.Send() }()
+	probeWait(t, p.transport.reading)
+	cancel()
+	if err := probeWait(t, result); err == nil {
+		t.Fatal("cancelled Send succeeded")
+	}
+	probeWait(t, p.transport.closed)
+	if !p.b.IsSent() {
+		t.Fatal("failed Send did not mark finalized")
+	}
+	if got := rowsWritten(t, p.transport); !reflect.DeepEqual(got, []int{2, 0}) {
+		t.Fatalf("blocks before cancel=%v", got)
+	}
+	t.Log("cancellation after data write closed transport and returned an error; IsSent remained true")
+}
+func TestProbeFreshBatchAfterUnknownAttempt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := newProbe(t, ctx)
+	appendProbe(t, first.b, 11, 22)
+	result := make(chan error, 1)
+	go func() { result <- first.b.Send() }()
+	probeWait(t, first.transport.reading)
+	cancel()
+	if err := probeWait(t, result); err == nil {
+		t.Fatal("first attempt unexpectedly succeeded")
+	}
+	second := newProbe(t, context.Background())
+	appendProbe(t, second.b, 11, 22)
+	second.transport.packets <- []byte{proto.ServerEndOfStream}
+	if err := second.b.Send(); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first.transport.snapshot()[0], second.transport.snapshot()[0]) {
+		t.Fatal("retry changed encoded row payload")
+	}
+	t.Log("fresh batch/context resent identical row bytes after an unconfirmed attempt")
+}
+func TestProbePreparePerformsNetworkIO(t *testing.T) {
+	p := newProbe(t, context.Background())
+	sample := new(cp.Buffer)
+	sample.PutByte(proto.ServerData)
+	sample.PutString("")
+	if err := p.b.block.EncodeHeader(sample, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.b.block.EncodeColumn(sample, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	p.transport.packets <- sample.Buf
+	b, err := p.c.prepareBatch(context.Background(), func(_ nativeTransport, err error) { p.release(err) }, nil, "INSERT INTO t (value)", driver.PrepareBatchOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.transport.snapshot()) == 0 || p.transport.snapshot()[0][0] != proto.ClientQuery {
+		t.Fatal("Prepare did not send Query")
+	}
+	appendProbe(t, b, 11)
+	if err := b.Abort(); err != nil {
+		t.Fatal(err)
+	}
+	t.Log("Prepare sent INSERT query and consumed sample block before Append")
+}
+func TestProbeCancelDuringPrepareRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	p := newProbe(t, ctx)
+	result := make(chan error, 1)
+	go func() {
+		_, err := p.c.prepareBatch(ctx, func(_ nativeTransport, err error) { p.release(err) }, nil, "INSERT INTO t (value)", driver.PrepareBatchOptions{})
+		result <- err
+	}()
+	probeWait(t, p.transport.reading)
+	cancel()
+	if err := probeWait(t, result); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Prepare cancellation=%v", err)
+	}
+	probeWait(t, p.transport.closed)
+	t.Log("Prepare sample wait cancelled and closed transport")
+}

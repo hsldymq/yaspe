@@ -14,6 +14,7 @@
 | ADR-0005 | 保留 Consumer Group 协调，由 Connector 提供 revoke 时间预算 | Accepted | M2+ | [0005](0005-connector-owned-revoke-budget.md) |
 | ADR-0006 | Source 最终失败独立报告，Kafka 会话恢复由 Connector 限时管理 | Accepted | M1–M2 | [0006](0006-source-failure-reporting-and-session-recovery.md) |
 | ADR-0007 | Source 按层计数，Kafka 不新增字节限制 | Accepted | M1–M2 | [0007](0007-layered-source-prefetch-budgets.md) |
+| ADR-0008 | ClickHouse 目标与写入策略归业务，按实际配置确认结果 | Accepted | M2+ | [0008](0008-clickhouse-business-owned-write-semantics.md) |
 
 ## 核心执行模型局部决定
 
@@ -37,6 +38,15 @@
 | D-KAFKA-003 | 有限会话建立/恢复、阶段相关错误分类与 assignment 成功边界 | Accepted / version adaptation pending | M2 | [Kafka Design §3.6](../designs/0007-position-and-kafka-rebalance.md#36-会话建立与恢复) |
 | D-KAFKA-004 | 默认 2 个 fetch / 1,024 条 Connector 缓冲，可配置且为正整数，不承诺整体记录数或字节上限 | Accepted | M2 | [Kafka Design §3.2](../designs/0007-position-and-kafka-rebalance.md#32-分层缓存与背压) |
 | D-KAFKA-005 | Revoke callback 入口计时，blocked 只作诊断；本地期限不等于外部保证，限定 classic group | Accepted | M2 | [Kafka Design §3.4.1](../designs/0007-position-and-kafka-rebalance.md#341-本地期限与外部期限的不确定性) · [§3.7](../designs/0007-position-and-kafka-rebalance.md#37-第一版-group-协议范围) |
+
+## ClickHouse 局部决定
+
+| ID | 决策 | 状态 | 权威位置 |
+|---|---|---|---|
+| D-CH-001 | v2.48.0 Native batch；组批后 Prepare，每次尝试重建，Send 确认 | Accepted | [ClickHouse Design §3](../designs/0009-clickhouse-connector.md#3-固定客户端与-batch-生命周期) |
+| D-CH-002 | 默认 5,000 行/1 秒/10,000 item 容量/并发 2，均可配置且为正值 | Accepted | [ClickHouse Design §4](../designs/0009-clickhouse-connector.md#4-组批与容量) |
+| D-CH-003 | 有限重试保留历史 Unknown，初始五秒尝试/十秒总预算/最多三次 | Accepted | [ClickHouse Design §5](../designs/0009-clickhouse-connector.md#5-clickhouse-有限重试) |
+| D-CH-004 | 一 item 一行，接管后转换一次，固定 Sink settings，按表与有序列集合组批 | Accepted | [ClickHouse Design §4.3](../designs/0009-clickhouse-connector.md#43-输入映射与多目标组批) |
 
 ## 维护规则
 

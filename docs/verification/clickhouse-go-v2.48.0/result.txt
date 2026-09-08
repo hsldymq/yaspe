@@ -1,0 +1,26 @@
+Baseline: github.com/ClickHouse/clickhouse-go/v2@v2.48.0
+Module checksum: h1:auzd4VkapQYhQF8F2Gog7s3x78Bi1JZmByxGbrw3C+4=
+go version go1.27.0-X:nodwarf5 linux/amd64
+=== RUN   TestProbeSendWaitsForAcknowledgement
+    yaspe_probe_test.go:168: Append stayed local; Send wrote two rows and terminator, then waited for EOS
+--- PASS: TestProbeSendWaitsForAcknowledgement (0.00s)
+=== RUN   TestProbeCloseDoesNotSendBufferedRows
+    yaspe_probe_test.go:189: Close sent only an empty terminator; IsSent=true does not prove rows were sent
+--- PASS: TestProbeCloseDoesNotSendBufferedRows (0.00s)
+=== RUN   TestProbeAbortDoesNotSendRows
+    yaspe_probe_test.go:212: Abort discarded unsent rows and released with an error; not a remote rollback
+--- PASS: TestProbeAbortDoesNotSendRows (0.00s)
+=== RUN   TestProbeCancelDuringSend
+    yaspe_probe_test.go:233: cancellation after data write closed transport and returned an error; IsSent remained true
+--- PASS: TestProbeCancelDuringSend (0.00s)
+=== RUN   TestProbeFreshBatchAfterUnknownAttempt
+    yaspe_probe_test.go:256: fresh batch/context resent identical row bytes after an unconfirmed attempt
+--- PASS: TestProbeFreshBatchAfterUnknownAttempt (0.00s)
+=== RUN   TestProbePreparePerformsNetworkIO
+    yaspe_probe_test.go:281: Prepare sent INSERT query and consumed sample block before Append
+--- PASS: TestProbePreparePerformsNetworkIO (0.00s)
+=== RUN   TestProbeCancelDuringPrepareRead
+    yaspe_probe_test.go:298: Prepare sample wait cancelled and closed transport
+--- PASS: TestProbeCancelDuringPrepareRead (0.00s)
+PASS
+ok  	github.com/ClickHouse/clickhouse-go/v2	1.010s

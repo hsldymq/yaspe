@@ -1,6 +1,6 @@
 # yaspe Current Status
 
-最后更新：2026-09-07
+最后更新：2026-09-08
 
 本文是动态交接快照，不是完整设计记录。完整契约见正式 Design，决定背景和取舍见
 [决策索引](decisions/README.md)，维护规则见 [Documentation Governance](governance.md)。
@@ -38,7 +38,9 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | Kafka 会话建立/恢复预算与错误分类 | Accepted | Not Started | Not Applicable | [Kafka Design §3.6](designs/0007-position-and-kafka-rebalance.md#36-会话建立与恢复) |
 | Kafka 提交参数 / 本地期限边界 / classic group 范围 | Accepted | Not Started | Not Applicable | [Kafka Design §3.3–3.7](designs/0007-position-and-kafka-rebalance.md#33-offset-提交与-revoke-交接) |
 | Kafka v1.21.6 基线 / 预取默认值 / revoke 计时起点 | Accepted | Not Started | Not Applicable | [Kafka Design §3](designs/0007-position-and-kafka-rebalance.md#3-kafka-客户端适配) |
-| Kafka / ClickHouse Connector | Discussing | Not Started | Not Applicable | [Roadmap M2](roadmap.md#6-m2source-position完成跟踪与生产级-sink) |
+| Kafka Connector | Accepted（完整适配验证未完成） | Not Started | Not Applicable | [Kafka Design](designs/0007-position-and-kafka-rebalance.md) |
+| ClickHouse 写入确认 / v2.48.0 Native 生命周期 / 有限重试 | Accepted | Not Started | Not Applicable | [ClickHouse Design §2–6](designs/0009-clickhouse-connector.md#2-业务配置与成功边界) |
+| ClickHouse 输入映射 / 多目标组批 / 默认配置 | Accepted | Not Started | Not Applicable | [ClickHouse Design §4](designs/0009-clickhouse-connector.md#4-组批与容量) |
 | Dead Letter / Side Output | Planned for later | Not Started | Not Applicable | [Roadmap M4](roadmap.md#8-m4keyby分区执行与逻辑物理执行图) |
 
 ## 当前代码事实
@@ -67,6 +69,10 @@ tracker、Kafka 或 ClickHouse 实现。
 [franz-go v1.21.6 验证附件](verification/franz-go-v1.21.6/README.md) 是独立 Go module，包含
 七项客户端模拟测试及固定依赖；不属于上述生产实现，根模块测试也不包含它。已观察行为
 与未覆盖场景由附件维护，不能据此把 Kafka Connector 标记为 Implemented 或完整 Verified。
+
+[clickhouse-go v2.48.0 验证附件](verification/clickhouse-go-v2.48.0/README.md) 保存原驱动
+batch/connect 的七项白盒探针和复现脚本，在临时驱动副本中执行，根模块测试不包含它。
+可控连接结果不代表真实服务器、公共连接池、完整超时/重试或 Connector 实现已验证。
 
 ## 最近接受的决定
 
@@ -204,31 +210,58 @@ tracker、Kafka 或 ClickHouse 实现。
 能力契约与依赖见 [Design Map](designs/design-map.md)，长期取舍索引见
 [Decision Index](decisions/README.md)。
 
+ClickHouse 已接受的具体决定：
+
+- 业务提供目标表、列映射和写入设置，Connector 不按表引擎自动路由或强制某种转发/
+  服务端异步配置。完整 INSERT 的成功按实际配置确认边界解释，不能推断所有 shard/
+  副本的持久化，详见 [ClickHouse Design §2](designs/0009-clickhouse-connector.md#2-业务配置与成功边界)
+  与 [ADR-0008](decisions/0008-clickhouse-business-owned-write-semantics.md)。
+- 采用 clickhouse-go/v2 v2.48.0 Native API，先在 Connector 组批，再开始尝试并 Prepare。
+  每次尝试新建 batch/context，Send 才形成完整写入结果；IsSent 和驱动 Close/Abort
+  不作为行成功依据，详见 [ClickHouse Design §3](designs/0009-clickhouse-connector.md#3-固定客户端与-batch-生命周期)。
+- 每批默认 5,000 行、组批等待 1 秒、总容量 10,000 item、并发 INSERT 2，均可配置且
+  必须为正值；最早行等待不因新行重置，时间到期是发送资格而非完成保证。全部目标
+  共享待转换/buffer/in-flight/retry 容量与并发，空分组回收且不长期饿死已就绪目标，
+  详见 [ClickHouse Design §4](designs/0009-clickhouse-connector.md#4-组批与容量)。
+- 一条 SinkItem 映射为恰好一行，业务提供 Table、Columns、Values；接管后转换与校验
+  一次，列值数量匹配，重试复用稳定结果。多目标按表与有序列集合组批，写入设置固定
+  在 Sink 配置中；零/多行由上游 Filter/FlatMap 表达。转换失败时不能把已接管 group
+  改判为拒收，详见 [ClickHouse Design §4.3](designs/0009-clickhouse-connector.md#43-输入映射与多目标组批)。
+- 可恢复暂时故障含未知结果可有限重试，接受重复风险；单次最多 5 秒、总预算最多
+  10 秒、最多 3 次含首次，退避 200 毫秒至最多 1 秒，更早 Close deadline 优先。
+  重试保持稳定数据与定义，历史 Unknown 不被最后一次未发送覆盖，详见
+  [ClickHouse Design §5](designs/0009-clickhouse-connector.md#5-clickhouse-有限重试)。
+
 ## 当前开放问题与顺序
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
 
-1. ClickHouse Connector 的 batch、flush、部分失败、unknown effect、内部 retry 与有限关闭设计；
-2. M2 指标、故障注入和交付保证审核；
-3. Kafka 主要设计已收敛，完整适配验证仍待完成：真实 broker、多实例 eager/cooperative、
+1. M2 指标、故障注入和交付保证审核；
+2. Kafka 主要设计已收敛，完整适配验证仍待完成：真实 broker、多实例 eager/cooperative、
    提交超时/重试及旧请求、恢复 timer/迟到事件、默认预取组合和大消息/长期背压。
    已通过的七项与证据限制见 [验证附件](verification/franz-go-v1.21.6/README.md)，详细矩阵
    见 [Kafka Design §4](designs/0007-position-and-kafka-rebalance.md#4-当前开放问题)。
+3. ClickHouse 主要设计已收敛，实际输入映射/组批、容量/热点调度、真实客户端/服务端、
+   连接池竞争、完整 timeout/retry/Close、错误分类及交付前提仍待验证，见
+   [ClickHouse Design §7](designs/0009-clickhouse-connector.md#7-尚未完成的适配验证)。
 
 ## 当前唯一下一步
 
-讨论并接受 ClickHouse Connector 的 batch、flush 与失败语义，从
-[Sink Design](designs/0005-sink-handoff-and-completion.md) 已接受的整组接管、逐 item completion、
-Connector 内部 retry 和有限 Close 契约出发，明确实际客户端的完成与不确定结果边界。
+讨论并接受 M2 的最小指标集合、故障注入矩阵与交付保证声明，以
+[Verification Design §2.2](designs/0008-runtime-verification-and-observability.md#22-m2-实现前必须收敛)
+为起点，明确可恢复 Source、Sink 确认与业务写入设置的前提及验收证据。Kafka/ClickHouse
+主要设计不再作为未决项，尚未完成的适配测试继续独立跟踪。
 
 ## 最近验证
 
-验证日期：2026-09-07。变更范围为文档契约、交接记录与独立客户端验证附件，未新增 Runtime
+验证日期：2026-09-08。变更范围为文档契约、交接记录与独立客户端验证附件，未新增 Runtime
 或 Connector 生产实现。
 
-- `go test ./...`：现有 Operator 基线通过，不构成新 Source/Kafka 契约的实现验证；
-- 在版本验证附件目录运行 `go test -race -v -count=1 -timeout 60s ./...`：七项通过，
+- `go test ./...`：2026-09-07 现有 Operator 基线通过，不构成新 Connector 契约的实现验证；
+- 2026-09-07 在 Kafka 版本验证附件运行 `go test -race -v -count=1 -timeout 60s ./...`：七项通过，
   原始输出和限定范围见 [验证附件](verification/franz-go-v1.21.6/README.md)；
+- 2026-09-08 在 ClickHouse 附件运行 `python3 run_probe.py`，原始 v2.48.0 驱动副本上七项
+  TestProbe 带 race detector 通过，输出与限制见 [验证附件](verification/clickhouse-go-v2.48.0/README.md)；
 - `git diff --check`：通过；
 - Markdown 相对链接目标与章节锚点检查：通过；
-- Runtime race/fault、真实 Kafka 故障测试及 benchmark：尚未运行；不能与客户端模拟测试混同。
+- Runtime race/fault、真实 Kafka/ClickHouse 故障测试及 benchmark：尚未运行；不能与局部驱动测试混同。

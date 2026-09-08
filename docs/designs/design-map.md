@@ -1,6 +1,6 @@
 # yaspe Design Map
 
-最后更新：2026-09-07
+最后更新：2026-09-08
 
 本文是近期 Design 的导航和依赖地图。它维护每个 Design 的权威范围、设计状态与阅读顺序，
 不复制完整契约，也不维护实现、验证、工作区或唯一下一步；这些动态事实由
@@ -18,6 +18,7 @@
 | [0006 Failure、Panic 与 Shutdown](0006-failure-panic-and-shutdown.md) | Operator Work Failure Policy、FailJob、RunError、panic、错误因果、shutdown | Accepted | 0001、0005 |
 | [0007 Position、Ownership 与 Kafka Rebalance](0007-position-and-kafka-rebalance.md) | split/position、私有 Completion Tracker、generation fence、Kafka 分层预取/提交/rebalance/会话恢复/v1.21.6 基线 | Accepted（完整适配验证未完成，见 Status） | 0001、0003、0005、ADR-0005、ADR-0006、ADR-0007 |
 | [0008 Runtime 验证与可观测性](0008-runtime-verification-and-observability.md) | 指标、确定性测试、race/leak、fault、benchmark、审核清单 | M1 Accepted / M2 Discussing | 全部近期执行契约 |
+| [0009 ClickHouse Connector](0009-clickhouse-connector.md) | 一 item 一行的业务映射、多目标组批、初始配置、v2.48.0 Native batch、确认/重试/关闭 | Accepted（完整实现验证未完成，见 Status） | 0005、0006、ADR-0004、ADR-0008 |
 
 `Accepted / details discussing` 或 `pending` 表示已接受的行为继续有效，但文件明确列出的
 接口/策略问题或版本适配核验尚未完成。实现与验证是否完成不得从该标签推断。
@@ -38,13 +39,14 @@
 
 0007 同时依赖 0003 的 Source ownership 和 0005 的 completion 事实；图中只画主路径，
 不表示省略这些交叉依赖。
+0009 是 0005/0006 的具体 Connector 消费者，验证要求回到 0008，局部驱动证据由附件保存。
 
 ## 推荐阅读顺序
 
 1. 先读 0001，建立 work、attempt、permit、completion、position 和 execution lane 的共同语言；
 2. M1 Runtime 实现依次读 0002、0003、0004、0005、0006；
 3. 测试和指标设计读 0008，并回到被验证行为的权威 Design；
-4. M2 position、Kafka 和异步 Sink 工作再读 0007 及 0005 的 M2 部分；
+4. M2 position、Kafka 和异步 Sink 工作再读 0007 及 0005 的 M2 部分，ClickHouse 读 0009；
 5. 长期取舍背景从 [Decision Index](../decisions/README.md) 进入 ADR，而不是从 Design 猜测。
 
 ## 维护规则

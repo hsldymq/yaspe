@@ -1,7 +1,7 @@
 # 0008：Runtime 验证与可观测性
 
 状态：M1 Accepted / M2 Discussing
-最后更新：2026-09-07
+最后更新：2026-09-08
 适用阶段：M1–M2
 依赖：全部近期执行契约；见 [Design Map](design-map.md)
 
@@ -297,6 +297,39 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
 - Build table test 覆盖 finite/unlimited 冲突、零或负预算和非法 backoff/jitter，默认未配置
   Retry 时仍直接 FailJob。
 
+### 1.10 ClickHouse Connector 验证
+
+[ClickHouse Design](0009-clickhouse-connector.md) 的已接受契约须验证：
+
+- 业务目标表、列映射及设置准确传递，不因表引擎自动改写路由或写入策略；成功报告
+  不早于完整 INSERT 的配置相关确认，实际交付声明须记录服务端前提；
+- 组批阶段不创建驱动 batch；五秒尝试预算在 Prepare 前开始并覆盖连接获取、准备、
+  填充、Send 与结果等待，不在 Send 时重新计时；
+- 每次尝试使用新 batch/context，稳定的定义、行内容及顺序不变，不重新执行 Operator
+  或业务转换，已通过其他请求确认成功的 item 不被再次发送；
+- 十秒总预算、最多三次尝试、退避 200 毫秒至最多一秒及更早 Close deadline 共同生效；
+  多次尝试与 lifecycle 取消/Close 竞争不得重置预算、突破并发或遗漏最终结果；
+- 历史未知效果不能被最后一次连接前失败覆盖为 NotApplied；无逐行证据时不猜测成功
+  子集，不把清理成功或 IsSent=true 当作写入成功；
+- Sink 关闭须发送的缓冲通过 Send 处理；驱动 Close/Abort 不替代发送、不作为 rollback，
+  释放错误不覆盖写入根因，所有已接管 item 最终结果与 reporter fence 一致；
+- 验证已接受的一 item 一行、接管后转换一次、固定 Sink settings、按目标表和有序列
+  集合分组；列数与值数不匹配不得发送，不得仅按表名混批或在重试时重新执行业务转换；
+- 映射错误形成 NotApplied，不能将已接管 group 改判为 Accept 拒收；其他已接管 item
+  仍须有限收尾。覆盖上游 Filter/FlatMap 的零/多输出、跨 work 合批与跨 batch completion；
+- 验证 5,000 行、1 秒组批等待、10,000 item 总容量和并发 2 的默认值及正值配置校验；
+  新行不重置最早行计时，时间到期是发送资格而非外部成功，空批不发送；
+- 覆盖低流量、多目标、容量小于期望 batch、关闭发送未满批；待转换、buffer、发送、
+  in-flight 和 retry 共用 item 预算，移动到后台不提前释放，不能靠等待新 Accept 才触发 flush；
+- 热点目标不能长期挤占已就绪分组，空分组及时回收，持续变化的表/列组合不无限累积
+  元数据、timer 或 goroutine；实现矩阵见
+  [ClickHouse Design §7.1](0009-clickhouse-connector.md#71-输入映射与组批实现验证)。
+
+[v2.48.0 白盒验证附件](../verification/clickhouse-go-v2.48.0/README.md) 中七项 TestProbe
+开启 race detector 并通过，原始输出可复现。测试使用可控 net.Conn、无压缩 UInt64 和
+测试用 block revision，未经过真实服务器、握手、公共连接池或 socket deadline。
+这些证据只覆盖部分 driver batch 生命周期，不代表上述 Connector/服务端验证已完成。
+
 ## 2. 当前开放问题
 
 当前 M0 的退出目标是先收敛所有影响 M1/M2 公共 API、所有权、并发和恢复正确性的设计，
@@ -322,7 +355,10 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
   Lost → GroupManageError → Assigned 及不 poll 时的权限错误；其余错误覆盖、恢复 timer
   和竞争仍待验证，完成条件见
   [Kafka Design §4.1](0007-position-and-kafka-rebalance.md#41-会话恢复信号与错误类型的版本适配核验)；
-- ClickHouse batch、flush、部分失败、unknown effect 和关闭 deadline；
+- ClickHouse 主要设计、输入映射与所有初始组批参数已接受；实际映射/组批、容量/调度
+  验证见 [ClickHouse Design §7.1](0009-clickhouse-connector.md#71-输入映射与组批实现验证)。
+  真实服务端错误、连接池竞争、完整 timeout/retry/Close 与交付保证仍需按 §7.2 验证，
+  不能把七项驱动白盒测试扩展成完整 Connector 验证；
 - M2 指标、故障注入矩阵和 at-least-once 声明审核。
 
 ### 2.3 可由原型细化但不得改变语义的事项
