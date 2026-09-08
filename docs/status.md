@@ -56,7 +56,7 @@ Sink 和 Runtime 尚未实现。Kafka、ClickHouse 与 Operator Retry 留在 M2�
   [Job 测试](../job_test.go)、[编译契约测试](../job_compile_test.go) 和 [转换测试](../stream_test.go)
   覆盖构建惰性、独立快照、并发派生、非法结构/类型和内置转换行为；
 - [Memory Source](../connector/memory/source.go) 与
-  [SourceController](../connector/memory/source_controller.go)：有界提交、非阻塞 FIFO 读取、
+  [SourceWriter](../connector/memory/source_writer.go)：有界提交、非阻塞 FIFO 读取、
   通知、正常结束、独立失败报告和关闭已实现；基础、并发和使用示例的证据见
   [Source Design §1.8](designs/0003-source-reader-and-admission.md#18-memory-source-实现与验证证据)；
 - [Source](../source.go)、[Sink](../sink.go) 和 OperatorLifecycle 定义公共协议；Memory Source
@@ -128,7 +128,7 @@ batch/connect 的七项白盒探针和复现脚本，在临时驱动副本中执
   已缓存记录，读取失败则优先于尚未交接的缓存，详见
   [Source Design §1.2](designs/0003-source-reader-and-admission.md#12-非阻塞-reader)。
 - Memory Source 定位为动态有界的 Runtime 参考 Source、确定性测试设施、benchmark 输入和
-  本地示例数据源；Runtime-facing Source 与 producer Controller 分离，并已接受 Submit 背压/
+  本地示例数据源；Runtime-facing Source 与 producer Writer 分离，并已接受 Submit 背压/
   ownership、Finish drain、Fail 根因、Runtime Close 和并发终态线性化语义，详见
   [Source Design §1.7](designs/0003-source-reader-and-admission.md#17-m1-memory-source)。
 - Source admission 在读取前预留完整 reservation；ready 返回即转移 ownership 和 completion
