@@ -11,7 +11,8 @@ import (
 	"time"
 )
 
-// 通过真实编译器验证公开 type-state 和泛型边界. 临时模块只 import 库, 不递归运行本测试.
+// TestJobTypeStateCompilation 验证合法构建可编译, 错误构建阶段和不匹配的节点类型被编译器拒绝.
+// 临时模块只 import 库, 不递归运行本测试.
 func TestJobTypeStateCompilation(t *testing.T) {
 	root, err := os.Getwd()
 	if err != nil {

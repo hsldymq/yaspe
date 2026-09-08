@@ -44,6 +44,7 @@ func lastOperator[I, O any](t *testing.T, stream Stream[O]) Operator[I, O] {
 	return first
 }
 
+// TestFluentBuiltins 验证链式 Map 的类型转换, Filter 的零输出, FlatMap 的零或多输出及顺序, 并检查包装实例独立.
 func TestFluentBuiltins(t *testing.T) {
 	base := sourceForTest()
 	t.Run("map changes type", func(t *testing.T) {
@@ -89,6 +90,7 @@ func TestFluentBuiltins(t *testing.T) {
 	})
 }
 
+// TestFluentContextAndErrorPropagation 验证内置转换接收原始 context 和输入, 用户函数失败时返回原始错误且不 Emit.
 func TestFluentContextAndErrorPropagation(t *testing.T) {
 	base := sourceForTest()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -131,6 +133,7 @@ func TestFluentContextAndErrorPropagation(t *testing.T) {
 	}
 }
 
+// TestFluentEmitFailureStopsOutput 验证内置转换传播 Collector 错误, FlatMap 在首次 Emit 失败后停止后续输出.
 func TestFluentEmitFailureStopsOutput(t *testing.T) {
 	base := sourceForTest()
 	failure := errors.New("collector failed")

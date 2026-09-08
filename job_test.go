@@ -87,6 +87,7 @@ func buildForTest(t *testing.T, b JobBuilder) Job {
 	return job
 }
 
+// TestBuildIsLazy 验证构建和重复 Build 只保存定义, 不调用组件工厂或业务函数.
 func TestBuildIsLazy(t *testing.T) {
 	var calls atomic.Int32
 	b := NewJobDraft("lazy").FromFunc(func() (Source[int], error) {
@@ -119,6 +120,7 @@ func TestBuildIsLazy(t *testing.T) {
 	}
 }
 
+// TestBuildAllowsDirectSourceToSinkAndPreservesName 验证 Source 可直接连接 Sink, 并保留原始名称及节点类型信息.
 func TestBuildAllowsDirectSourceToSinkAndPreservesName(t *testing.T) {
 	j := buildForTest(t, NewJobDraft(" direct ").From(&stubSourceFactory{}).SinkTo(&stubSinkFactory{}))
 	if j.Name() != " direct " || len(j.nodes) != 2 {
@@ -129,6 +131,7 @@ func TestBuildAllowsDirectSourceToSinkAndPreservesName(t *testing.T) {
 	}
 }
 
+// TestBuildRejectsInvalidPublicInputs 验证零值, 空白名称和 nil 工厂或函数被拒绝, 重复 Build 返回一致错误且不污染其他派生路径.
 func TestBuildRejectsInvalidPublicInputs(t *testing.T) {
 	var source *stubSourceFactory
 	var op *stubOperatorFactory
@@ -186,6 +189,7 @@ func TestBuildRejectsInvalidPublicInputs(t *testing.T) {
 	buildForTest(t, sinkForTest(base))
 }
 
+// TestBuildCopiesTopologyAndAssignsLocalIDs 验证不同派生路径和重复 Build 的节点快照互相独立, 结构序号及上游引用只属于当前 Job.
 func TestBuildCopiesTopologyAndAssignsLocalIDs(t *testing.T) {
 	base := sourceForTest()
 	left := sinkForTest(base.Map(func(v int) string {
@@ -231,6 +235,7 @@ func TestBuildCopiesTopologyAndAssignsLocalIDs(t *testing.T) {
 	}
 }
 
+// TestConcurrentDerivationAndBuild 验证多个 goroutine 可共享同一 Stream 和 Builder, 并发派生及构建独立 Job.
 func TestConcurrentDerivationAndBuild(t *testing.T) {
 	base := sourceForTest()
 	builder := sinkForTest(base.Map(func(v int) int {
@@ -258,6 +263,7 @@ func TestConcurrentDerivationAndBuild(t *testing.T) {
 	wg.Wait()
 }
 
+// TestBuildRejectsCorruptPrivateTopology 验证 Build 拒绝缺失节点, 非线性结构, 环, 无效 adapter 和不一致的类型信息.
 func TestBuildRejectsCorruptPrivateTopology(t *testing.T) {
 	cases := []struct {
 		name, reason string
@@ -310,6 +316,7 @@ func TestBuildRejectsCorruptPrivateTopology(t *testing.T) {
 	}
 }
 
+// TestFactoriesRetainedAndCreateIndependentInstances 验证 Build 保留工厂而不执行它, 后续创建时保留原始错误并得到独立 Operator 实例.
 func TestFactoriesRetainedAndCreateIndependentInstances(t *testing.T) {
 	factoryErr := errors.New("factory failed")
 	var calls int
