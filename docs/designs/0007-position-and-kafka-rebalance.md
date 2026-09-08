@@ -1,7 +1,7 @@
 # 0007：Position、Ownership 与 Kafka Rebalance
 
 状态：Accepted（主要设计已收敛，固定 v1.21.6 与初始默认值；§4 保留未完成的适配验证）
-最后更新：2026-09-07
+最后更新：2026-09-08
 适用阶段：M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Source Reader](0003-source-reader-and-admission.md) · [Sink Handoff](0005-sink-handoff-and-completion.md) · [ADR-0005](../decisions/0005-connector-owned-revoke-budget.md)
 
@@ -181,13 +181,33 @@ in-flight snapshot 或 Sink transaction API。
 
 Sink 未明确成功时不能推进 position。结果未知时，为避免丢失，第一版选择重试或失败恢复，而不是提前确认。这可能产生重复。
 
-第一版目标是边界明确的 at-least-once：
+第一版采用以下条件性交付目标：
+
+> 当 Source 可以从正确的已提交位置重放、所需数据仍然保留、Sink 成功确认满足约定的
+> 故障模型，且故障消除后能够继续处理时，预期输出至少产生一次；重试和恢复可能产生重复。
+
+具体边界为：
 
 - 不因 Source 已读取、Collector 已接受或 Sink 已入队而提前确认；
 - 崩溃后从未安全提交位置重放；
 - 外部结果未知时优先避免丢失；
 - 没有事务或幂等 Sink 时不承诺 exactly-once；
 - 不可重放 Source 不保证无丢失恢复。
+
+Kafka 所需记录已过期或恢复位置被人为跳过，不属于上述恢复前提。Memory Source 等
+不可重放来源不能因共用 Runtime 而获得崩溃恢复保证。失败本身不承诺自动无限恢复，
+宿主重启和故障消除仍须符合 Source/Job 约定。
+
+Sink 尚未满足声明的成功确认边界，就不能完成输入或推进 safe position。ClickHouse 的
+成功按业务配置解释，较弱的接收确认不能宣称为持久化 at-least-once；是否写本地表或
+Distributed 表及具体 settings 仍由业务决定，详见
+[ClickHouse Design §2.2](0009-clickhouse-connector.md#22-成功确认)。
+
+每个交付声明必须说明 Source 恢复方式、数据保留前提、Sink 配置、观察边界和覆盖的
+故障模型。进程故障测试不自动覆盖所有磁盘或集群故障，局部驱动测试也不能宣称已经
+验证端到端保证。正式声明须有
+[Verification Design §1.12–1.13](0008-runtime-verification-and-observability.md#112-m2-故障注入验收矩阵)
+的结果核对与分层证据支持；当前实现及验证完成度以 Status 为准。
 
 
 ## 2. Kafka Rebalance

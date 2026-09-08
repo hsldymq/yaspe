@@ -39,6 +39,19 @@
 | D-KAFKA-004 | 默认 2 个 fetch / 1,024 条 Connector 缓冲，可配置且为正整数，不承诺整体记录数或字节上限 | Accepted | M2 | [Kafka Design §3.2](../designs/0007-position-and-kafka-rebalance.md#32-分层缓存与背压) |
 | D-KAFKA-005 | Revoke callback 入口计时，blocked 只作诊断；本地期限不等于外部保证，限定 classic group | Accepted | M2 | [Kafka Design §3.4.1](../designs/0007-position-and-kafka-rebalance.md#341-本地期限与外部期限的不确定性) · [§3.7](../designs/0007-position-and-kafka-rebalance.md#37-第一版-group-协议范围) |
 
+## 可观测性局部决定
+
+| ID | 决策 | 状态 | 权威位置 |
+|---|---|---|---|
+| D-OBS-001 | M2 必需指标为成功 work 吞吐、消费/commit offset 差及分层缓存数量；失败指标延后 | Accepted | [Verification Design §1.11](../designs/0008-runtime-verification-and-observability.md#111-m2-最小指标范围) |
+
+## 验收局部决定
+
+| ID | 决策 | 状态 | 权威位置 |
+|---|---|---|---|
+| D-VERIFY-001 | 故障矩阵、稳定测试身份的输出核对、三层证据；预期输出零缺失且重复可解释 | Accepted | [Verification Design §1.12–1.13](../designs/0008-runtime-verification-and-observability.md#112-m2-故障注入验收矩阵) |
+| D-DELIVERY-001 | at-least-once 带 Source 重放/保留、Sink 配置与故障模型前提，不承诺任意配置的持久化 | Accepted | [Position Design §1.10](../designs/0007-position-and-kafka-rebalance.md#110-at-least-once) |
+
 ## ClickHouse 局部决定
 
 | ID | 决策 | 状态 | 权威位置 |

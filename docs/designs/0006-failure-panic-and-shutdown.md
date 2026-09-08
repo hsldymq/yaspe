@@ -124,9 +124,9 @@ work Retry 成功后从 active set 移除，并可通过日志/observer 发布�
 - primary trigger：真正耗尽并使 Job 此刻停止的 work 及其第一次 error；
 - failure collection：当时所有仍在 Retry 的 work 及其第一次 error 和摘要。
 
-单个 work 无论经历多少 attempt，其第一次 error 始终是该 work 的根因。多错误集合最终采用
-`Unwrap() []error`、primary 加查询接口或其他公开形态尚未决定，但内部从第一版开始保留这些
-信息，不能等 API 定稿后再丢失地补建。
+单个 work 无论经历多少 attempt，其第一次 error 始终是该 work 的根因。多错误集合采用
+[§1.7 的公开 RunError](#17-公开-runerror)，通过 `Unwrap() []error` 和查询接口暴露；内部从
+第一版开始保留上述因果信息和有界摘要。
 
 ### 1.6 Sink 最终失败
 

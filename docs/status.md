@@ -41,6 +41,8 @@ Kafka 和 ClickHouse 编码。局部私有类型、package 组织和不改变公
 | Kafka Connector | Accepted（完整适配验证未完成） | Not Started | Not Applicable | [Kafka Design](designs/0007-position-and-kafka-rebalance.md) |
 | ClickHouse 写入确认 / v2.48.0 Native 生命周期 / 有限重试 | Accepted | Not Started | Not Applicable | [ClickHouse Design §2–6](designs/0009-clickhouse-connector.md#2-业务配置与成功边界) |
 | ClickHouse 输入映射 / 多目标组批 / 默认配置 | Accepted | Not Started | Not Applicable | [ClickHouse Design §4](designs/0009-clickhouse-connector.md#4-组批与容量) |
+| M2 吞吐 / 消费与 commit 差 / 分层缓存指标 | Accepted | Not Started | Not Applicable | [Verification Design §1.11](designs/0008-runtime-verification-and-observability.md#111-m2-最小指标范围) |
+| M2 故障矩阵 / 输出核对 / 条件性交付声明 | Accepted | Not Started | Not Applicable | [Verification Design §1.12–1.13](designs/0008-runtime-verification-and-observability.md#112-m2-故障注入验收矩阵) · [Position Design §1.10](designs/0007-position-and-kafka-rebalance.md#110-at-least-once) |
 | Dead Letter / Side Output | Planned for later | Not Started | Not Applicable | [Roadmap M4](roadmap.md#8-m4keyby分区执行与逻辑物理执行图) |
 
 ## 当前代码事实
@@ -153,7 +155,8 @@ batch/connect 的七项白盒探针和复现脚本，在临时驱动副本中执
   实现后审核，详见 [Verification Design §1.6](designs/0008-runtime-verification-and-observability.md#16-m1-指标记录能力)。
 - M1 并发测试优先使用可控 fake、barrier、clock/executor，只为外部边界无法观察的 Runtime
   内部窗口保留私有 hook；关键测试不依赖 `time.Sleep`。Runtime goroutine 使用结构化 execution
-  group 追踪并在 `Run` 返回前回收，再以 race detector 和 leak detector 兜底，详见
+  group 追踪并在 `Run` 返回前回收；违反取消契约的超时例外遵循
+  [Failure Design §2.3](designs/0006-failure-panic-and-shutdown.md#23-context-与阻塞点)。测试以 race detector 和 leak detector 兜底，详见
   [Verification Design §1.7](designs/0008-runtime-verification-and-observability.md#17-确定性并发测试与-goroutine-回收)。
 - M1 benchmark 使用 Runtime overhead、CPU-bound 和真实墙钟 blocking-I/O simulation 三类
   最小 workload；标准 `testing.B` 输出与 `ReportMetric` 是原始事实，`benchstat` 负责多轮比较。
@@ -232,11 +235,23 @@ ClickHouse 已接受的具体决定：
   重试保持稳定数据与定义，历史 Unknown 不被最后一次未发送覆盖，详见
   [ClickHouse Design §5](designs/0009-clickhouse-connector.md#5-clickhouse-有限重试)。
 
+M2 最小指标已接受：成功 work 吞吐量、每个 Kafka partition 的消费/commit offset 差、
+客户端/Source Connector/Runtime/Sink 的分层数量。消费位置以 poll 已取出的记录计，
+两端统一为 next offset；不同层的记录、work、item 数不能简单相加。失败指标延后，
+错误报告和故障测试继续有效，详见
+[Verification Design §1.11](designs/0008-runtime-verification-and-observability.md#111-m2-最小指标范围)。
+
 ## 当前开放问题与顺序
 
-完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题)。当前顺序：
+M2 验收设计已接受：按既有契约在 Source、Operator、Sink、commit、ownership 和关闭
+边界注入故障，恢复后用稳定测试 ID/输出序号核对预期结果，缺失为零、重复可解释。
+at-least-once 带 Source 重放与数据保留、Sink 确认配置、故障消除及模型范围前提；三层
+验证证据不互相冒充，失败指标仍延后。设计接受不表示这些测试已完成。
 
-1. M2 指标、故障注入和交付保证审核；
+完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-设计收敛与验证断点)。当前顺序：
+
+1. M0 收尾检查：核对 Roadmap 完成标准、设计一致性、当前代码/测试与工作区，确认
+   是否具备进入 M1 最小实现链路的条件；当前里程碑仍为 M0，尚未标记完成；
 2. Kafka 主要设计已收敛，完整适配验证仍待完成：真实 broker、多实例 eager/cooperative、
    提交超时/重试及旧请求、恢复 timer/迟到事件、默认预取组合和大消息/长期背压。
    已通过的七项与证据限制见 [验证附件](verification/franz-go-v1.21.6/README.md)，详细矩阵
@@ -247,10 +262,10 @@ ClickHouse 已接受的具体决定：
 
 ## 当前唯一下一步
 
-讨论并接受 M2 的最小指标集合、故障注入矩阵与交付保证声明，以
-[Verification Design §2.2](designs/0008-runtime-verification-and-observability.md#22-m2-实现前必须收敛)
-为起点，明确可恢复 Source、Sink 确认与业务写入设置的前提及验收证据。Kafka/ClickHouse
-主要设计不再作为未决项，尚未完成的适配测试继续独立跟踪。
+执行 M0 收尾检查，依据 [Roadmap M0 完成标准](roadmap.md#4-m0核心语义与项目基线) 和
+[Verification Design §3](designs/0008-runtime-verification-and-observability.md#3-实现前审核点)
+核对设计、实现与证据；通过后进入 M1 的 Memory Source → Operator Chain → Memory Sink
+最小实现链路。完整实现故障测试随对应能力补齐，不作为尚未编码前必须全部通过的门槛。
 
 ## 最近验证
 

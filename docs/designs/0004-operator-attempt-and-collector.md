@@ -54,7 +54,7 @@ Collector becomes invalid
 - `Emit` 在等待下游容量、传播背压和解除阻塞时只使用该绑定 context。用户
   Operator 不能用无关 context 脱离当前 attempt 的取消边界；
 - `Process` 仍显式接收 context，供用户计算、I/O 和派生操作使用；
-- `Emit(nil)` 表示当前 Collector 已接受输出并取得后续责任；
+- `Emit` 返回 `nil` 表示当前 Collector 已接受输出并取得后续责任；
 - Collector 接受不等于最终 Sink 已经完成；
 - `Emit` 失败表示本次输出未被接受；
 - FlatMap 首次 Emit 失败后停止后续输出；

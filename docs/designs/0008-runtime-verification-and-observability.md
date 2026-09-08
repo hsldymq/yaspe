@@ -1,6 +1,6 @@
 # 0008：Runtime 验证与可观测性
 
-状态：M1 Accepted / M2 Discussing
+状态：Accepted（M1/M2 验收设计已接受；实现与完整验证状态见 Status）
 最后更新：2026-09-08
 适用阶段：M1–M2
 依赖：全部近期执行契约；见 [Design Map](design-map.md)
@@ -211,7 +211,9 @@ API。完整指标名称、标签和 adapter 在 M1、M2 具备真实实现经�
 
 `go test -race ./...` 必须覆盖正常执行、失败、取消、Source/Sink 并发与关闭路径，确定性竞态
 测试本身也必须能在 race detector 下运行。Runtime 创建的每个 goroutine 都必须进入内部
-execution group 或等价的结构化追踪机制，`Run` 返回前等待这些 goroutine 退出；实现不能只靠
+execution group 或等价的结构化追踪机制，`Run` 返回前等待这些 goroutine 退出；用户代码或
+Connector 违反取消契约时，按 [Failure Design §2.3](0006-failure-panic-and-shutdown.md#23-context-与阻塞点)
+的 shutdown timeout 例外报告并隔离，不得视为正常、完整回收。实现不能只靠
 测试前后比较整个进程的 goroutine 总数证明无泄漏。测试同时使用 goroutine leak detector 或
 等价检查兜底，覆盖正常结束、Operator 失败、Sink 失败、外部取消、shutdown deadline 和
 Source 等待通知时取消。外部客户端无法阻止的迟到 callback 按 Failure Design 的 fence 与状态
@@ -330,18 +332,147 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
 测试用 block revision，未经过真实服务器、握手、公共连接池或 socket deadline。
 这些证据只覆盖部分 driver batch 生命周期，不代表上述 Connector/服务端验证已完成。
 
-## 2. 当前开放问题
+### 1.11 M2 最小指标范围
+
+M2 必需指标限定为吞吐量、消费与 commit 的差、分层缓存数量三类。失败次数、失败突增
+及其他扩展指标延后审核；这不改变失败处理、错误报告、RunError、日志诊断或既有故障
+测试要求，也不改变这些路径必须有界的约束。
+
+#### 1.11.1 吞吐量
+
+沿用 §1.6 的成功 work 累计数和记录边界，外部根据相邻采样的增量与时间差计算速率。
+正常零输出计入成功，同一 work 的多个 retry attempts 不重复增加成功计数。item 数、
+batch 数、请求数不能代替该 work 吞吐量；这一指标也不用于判定外部交付是否重复。
+
+#### 1.11.2 消费与 commit 的差
+
+Kafka Connector 按 partition 暴露消费位置与最后确认提交位置，统一采用“下一条 offset”
+口径。消费位置指 Connector 已从客户端 poll 取得的最后一条记录的 offset + 1，可能
+包含尚未交给 Runtime 的 Connector 缓存；不是只统计已完成 work 的 safe position。
+
+```text
+消费与 commit 的差 = consumed_next_offset − confirmed_committed_next_offset
+```
+
+例如消费位置 1200、已确认提交位置 1100，差值为 100。差值包含缓存中、处理中和已经
+成功但还未确认提交的进度，是 offset 跨度，不一定恰好等于 100 条业务记录；也不是
+以 broker 最新位置计算的 consumer lag。提交发出或 safe position 前进都不能冒充 commit
+确认成功。
+
+两端位置须属于当前有效的 Source/partition ownership，迟到旧结果不更新当前观察值。
+缺少有效已确认位置时应表达未知，不把零伪装成已确认提交。数值由 Kafka Connector
+解释，通用 Runtime 继续保存不透明 position，不为指标增加位置解析职责。
+
+#### 1.11.3 分层缓存数量
+
+分别观察以下积压，保留原始计数单位与责任边界：
+
+| 层次 | 数量含义 |
+|---|---|
+| Kafka 客户端 | 已在客户端缓冲的记录数量；不能据此推断还未返回的 fetch 含多少记录 |
+| Source Connector | 已从客户端取出、尚未交给 Runtime 的记录，包含转换中的记录 |
+| Runtime | 排队及在途 work 数；in-flight 不等于仅队列中的 work |
+| Sink Connector | 已接管但未结束的 item 数，覆盖待转换、组批、发送、写入及 retry |
+
+分层数量不是互斥集合：Runtime in-flight work 可以正在等待 Sink item 完成，一个 work
+也可能有多个 item。不能把这些数值简单相加成总记录数或总内存，fetch/record/work/item
+单位也不能混用。各层容量保证仍以对应 Design 为准，不因增加指标而扩大记录数或字节
+上限的承诺。跨组件采样不作为 completion、ownership 或容量接管的权威判断。
+
+#### 1.11.4 范围、取舍与验证
+
+三类指标优先回答处理速率、消费进度距持久提交多远、积压位于何处。相比同时引入大量
+失败、时延及生命周期指标，先限制必需范围可以减少首版 instrumentation 与接口负担。
+故障原因仍由已有错误路径提供，未来根据诊断需要再评估失败指标。
+
+指标记录继续遵循 §1.6 的快速、并发安全、非阻塞和不影响 Job 结果要求。这里固定语义，
+不提前冻结完整 Metrics API、导出器、标签命名或 Prometheus 适配；这些在实现中审核。
+
+待实现验证须覆盖：
+
+- 零输出成功、多个 retry attempts、重复 completion 和非成功终态的吞吐计数；
+- poll 后尚未 admission、已成功尚未 commit、提交仅发出、确认成功和旧 ownership 迟到
+  结果对位置差的影响，验证 next-offset 单位与未知位置，不把 offset gap 当成行数；
+- 不同缓冲/责任阶段的数量变化，work 与 item 的重叠关系，移动到 Sink 或 retry 时不
+  被误报成已完成。指标不用于替代真实状态机的正确性判定。
+
+### 1.12 M2 故障注入验收矩阵
+
+故障验收使用已有 Source、Operator、Sink、position 与关闭契约，不引入另一套执行规则。
+失败指标延后不影响以下测试；错误结果、状态断言和输出核对不依赖新增失败计数指标。
+
+| 故障位置或场景 | 必须验证的结果 | 详细契约 |
+|---|---|---|
+| Source 已读取、尚未交接时进程崩溃 | 未处理数据未被提前提交，符合恢复前提时可重放 | [Source §1.4](0003-source-reader-and-admission.md#14-source-admission-与所有权) |
+| ready 交接与取消竞争 | 已交出的记录先绑定并追踪，不作为空 reservation 释放 | [Source §1.4](0003-source-reader-and-admission.md#14-source-admission-与所有权) |
+| Operator 部分 Emit 后失败 | 本次失败 attempt 的部分 terminal outputs 不交给 Sink | [Operator Design](0004-operator-attempt-and-collector.md) |
+| Sink 已接管、尚未发送时停止或崩溃 | 不提前完成输入；正常收尾逐项报告，崩溃后依赖 Source 重放 | [Sink Design](0005-sink-handoff-and-completion.md) |
+| 写入已发出，响应丢失或超时 | 保留 Unknown，不误报未生效；有限重试可能重复 | [ClickHouse §5](0009-clickhouse-connector.md#5-clickhouse-有限重试) |
+| Sink 按约定确认成功后、position 提交前后崩溃 | 从实际已提交位置恢复，允许重放，不越过未完成进度 | [Position §1.7](0007-position-and-kafka-rebalance.md#17-safein-flight-与-committed-position) |
+| revoke/lost、提交与迟到结果竞争 | 旧结果不推进新 ownership；旧提交最终失败后不补交 | [Kafka §2–3](0007-position-and-kafka-rebalance.md#2-kafka-rebalance) |
+| 慢 Sink、低流量、多目标、取消与关闭 | 各层计数约束有效，组批不永久等待，受控资源收敛，未知结果不算成功 | [ClickHouse §4](0009-clickhouse-connector.md#4-组批与容量) · [Failure §2](0006-failure-panic-and-shutdown.md#2-failjob取消与关闭) |
+
+每一行是测试入口，具体交错沿用 §1.1–1.10 的详细矩阵，包括部分 commit、重复报告、
+全局预算、eager/cooperative、lost 后重入及关闭期限，不以此摘要替代或减少已有要求。
+进程崩溃、请求返回 error、context 取消和正常 Close 是不同注入方式，不能只测试其中
+一种就声称其余路径也通过。
+
+### 1.13 结果核对与分层证据
+
+#### 1.13.1 独立结果核对
+
+恢复测试使用有限、可重复的数据集，给输入分配稳定的测试 ID，预先独立计算预期输出。
+用“输入 ID + 输出序号”标识一个预期输出，以覆盖 Filter 零输出、FlatMap 多输出及值
+恰好相同的不同输出。测试标识由测试数据提供，不把 Runtime 私有 WorkID 变成公共 API。
+
+在指定位置注入故障，按声明的恢复前提重启；故障消除并处理完测试集后，核对：
+
+- 预期输出缺失数为零；
+- 重复允许存在，须记录数量并关联到具体 retry/replay 场景；
+- 正常零输出在预期结果中显式表达，不能被误判为丢失；
+- Failed、Cancelled、Unknown 不得误报为 Success；可恢复测试不能越过未解决的输入
+  提交位置，不可恢复配置错误仍须按契约明确失败，不能假定不修复也会完成全部输入。
+
+没有 panic、日志正常、总计数相同或指标曲线正常，都不能替代稳定身份的结果核对。
+核对边界必须与 Sink 业务配置和故障模型一致；条件性交付声明见
+[Position Design §1.10](0007-position-and-kafka-rebalance.md#110-at-least-once)。
+
+#### 1.13.2 三层验证
+
+| 层次 | 证据范围 | 不能外推的结论 |
+|---|---|---|
+| 确定性测试 | 可控 fake/barrier/clock 验证状态机、取消和并发交错 | 不代表实际驱动或服务器行为 |
+| 固定客户端测试 | 使用锁定版本验证驱动、请求与 callback 行为，已有两组七项属于局部证据 | 不代表完整 Runtime/Connector、真实网络或持久化 |
+| 隔离环境中的真实 Kafka/ClickHouse 测试 | 固定版本与业务配置，验证进程重启、多实例交接和实际确认结果 | 不代表未声明的磁盘、集群或其他故障模型 |
+
+每项证据记录输入集、版本/配置前提、注入位置与方式、预期断言、实际结果和未覆盖范围。
+本次验收设计的接受不等于任何尚未运行的测试已经通过；通过一层不自动替代另一层。
+
+#### 1.13.3 设计门槛与实现门槛
+
+编码前需要明确行为契约与验收方法，不要求尚未实现的 Runtime/Connector 先通过全部
+完整故障测试。完成设计落盘与 M0 收尾检查后，可按 Roadmap 进入 M1 最小链路实现；
+测试随对应实现补齐，作为 M1/M2 能力完成和交付保证声明的依据。
+
+M0 收尾检查仍须核对 Roadmap 完成标准、设计一致性、代码/测试事实和工作区，不因为
+讨论清单收敛就自动标记 M0 Completed。真实适配若暴露影响公开契约的事实，仍须报告并
+修正设计或实现，不以“测试留到后面”为由绕过正确性问题。
+
+## 2. 设计收敛与验证断点
 
 当前 M0 的退出目标是先收敛所有影响 M1/M2 公共 API、所有权、并发和恢复正确性的设计，
 再开始 Runtime 与生产 Connector 编码。局部命名、私有类型组织和可由受约束原型验证的实现
 选择不需要在文档中预先固定。
+
+当前主要行为、M2 三类指标及本节之前的验收方案已接受；下一步由 Status 指向 M0 收尾
+检查。以下适配与完整实现验证继续单独跟踪，不混同为必须重新讨论的设计结论。
 
 ### 2.1 M1 实现前必须收敛
 
 - 无剩余设计问题；M1 指标记录、确定性测试、race/leak 和 benchmark 审核已经接受。具体私有
   类型与测试 package 组织可在实现中按 §2.3 细化。
 
-### 2.2 M2 实现前必须收敛
+### 2.2 M2 已接受设计与待验证项
 
 - Kafka 主要设计、v1.21.6 版本、本地 callback 入口计时和 classic 范围已接受；完整
   协议配置、内部锁等待、retry 和取消/串行化仍需验证，见
@@ -359,7 +490,9 @@ profiler 发现问题后再增加有解释价值的针对性 benchmark。
   验证见 [ClickHouse Design §7.1](0009-clickhouse-connector.md#71-输入映射与组批实现验证)。
   真实服务端错误、连接池竞争、完整 timeout/retry/Close 与交付保证仍需按 §7.2 验证，
   不能把七项驱动白盒测试扩展成完整 Connector 验证；
-- M2 指标、故障注入矩阵和 at-least-once 声明审核。
+- M2 最小指标范围已由 §1.11 接受；失败指标延后，指标实现仍待验证。
+- M2 故障矩阵、输出核对和分层证据方案已由 §1.12–1.13 接受；条件性交付声明见
+  [Position Design §1.10](0007-position-and-kafka-rebalance.md#110-at-least-once)，完整故障测试尚未完成。
 
 ### 2.3 可由原型细化但不得改变语义的事项
 

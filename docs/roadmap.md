@@ -122,6 +122,11 @@ M11 分布式执行（探索）
 - 影响 M1/M2 公共 API、所有权、并发和恢复正确性的开放问题已经收敛；局部私有实现选择可留给受约束原型；
 - `status.md` 能准确指向下一项具体工作。
 
+M0 检查行为契约和验收方法是否收敛，不要求尚未实现的 Runtime/Connector 先通过完整
+故障测试。收尾检查通过后按顺序进入 M1 实现，测试随实现补齐；M1/M2 能力完成和交付
+保证仍须满足各自的验证标准，见
+[Verification Design §1.13](designs/0008-runtime-verification-and-observability.md#113-结果核对与分层证据)。
+
 ## 5. M1：有界并发的 Stateless Runtime
 
 状态：Planned
@@ -208,7 +213,8 @@ M11 分布式执行（探索）
   重试与有限关闭；一 item 一行、接管后转换、多目标组批与初始配置的完整契约见
   [ClickHouse Design](designs/0009-clickhouse-connector.md)，实现验证仍须完成；
 - 有上限的 Retry 策略及 backoff；
-- Source lag、in-flight、batch 和 commit 指标；
+- 最小指标为成功 work 吞吐量、按 partition 的消费/commit offset 差、分层缓存数量；
+  失败指标延后，完整口径见 [Verification Design §1.11](designs/0008-runtime-verification-and-observability.md#111-m2-最小指标范围)；
 - 在指定 position 和 batch 阶段进行故障注入。
 
 ### 非范围
@@ -222,7 +228,7 @@ M11 分布式执行（探索）
 ### 完成标准
 
 - position 较大的记录先完成时，不会越过前序未完成记录提交；
-- Sink 仅入队但尚未落库时，输入不会被标记完成；
+- Sink 仅在 Connector 内入队、尚未满足声明的成功确认边界时，输入不会被标记完成；
 - batch 写入失败不会被报告为成功；
 - Retry 是否可能产生重复输出有清楚说明和测试；
 - 多个实例使用同一 Consumer Group 时，同一 partition 不会被 yaspe 主动重复分配；
@@ -237,7 +243,12 @@ M11 分布式执行（探索）
 - graceful shutdown 会停止新读取，并在期限内处理或明确放弃未完成的在途记录；
 - Kafka rebalance、取消和关闭时不会静默丢弃已确认但未提交的状态；
 - 故障测试覆盖读取后、处理时、Sink 入队后、batch 写入时和 position 提交前后的进程失败；
-- 当前交付保证被准确描述为 at-most-once、at-least-once 或其他限定语义。
+- 当前交付保证被准确描述为 at-most-once、at-least-once 或其他限定语义；持久化
+  at-least-once 必须满足 Source 重放/保留及 Sink 写入确认的前提，详见
+  [Position Design §1.10](designs/0007-position-and-kafka-rebalance.md#110-at-least-once)；
+- 按 [M2 故障验收矩阵](designs/0008-runtime-verification-and-observability.md#112-m2-故障注入验收矩阵)
+  注入故障，在声明范围内恢复后核对稳定测试 ID 的预期输出，缺失为零、重复可量化和
+  解释；确定性、固定客户端与隔离真实系统的证据分开保存。
 
 ## 7. M3：lightning-log-filter 迁移验证
 
@@ -661,8 +672,10 @@ Superseded   被新的里程碑或方案替代
 
 ## 18. 当前下一步
 
-当前处于 M0。核心执行模型已经 Accepted，但影响 M1/M2 公共 API、ownership、并发和恢复
-正确性的开放问题仍需按 [Current Status](status.md) 和
-[Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-当前开放问题) 依次收敛。
+当前处于 M0。主要执行契约、M2 最小指标与故障/交付验收方案已接受，接下来按
+[Current Status](status.md) 完成 M0 收尾检查，核对文档、代码、测试和已知契约问题后
+决定是否进入 M1。尚未完成的实现验证由
+[Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-设计收敛与验证断点)
+单独跟踪，不自动标记已验证或里程碑完成。
 
 当前唯一下一步由 Status 维护；Roadmap 不复制动态讨论队列。

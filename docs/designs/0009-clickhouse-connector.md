@@ -37,6 +37,10 @@ Append 成功、字节发出或驱动 IsSent 均不能单独形成成功。
 可能给出较弱的接收确认，Connector 不把这种结果改写成更强的落库保证。端到端交付声明
 必须列明实际配置和观察边界；任意可接受配置不等于都满足持久化 at-least-once。
 
+统一的 Source 恢复前提和条件性交付声明见
+[Position Design §1.10](0007-position-and-kafka-rebalance.md#110-at-least-once)，端到端结果核对
+与证据层次见 [Verification Design §1.13](0008-runtime-verification-and-observability.md#113-结果核对与分层证据)。
+
 Connector 后台执行 Send 并等待结果，与服务端是否使用异步插入设置是两个不同维度。
 初始“由框架强制关闭 async_insert、强制 Distributed 前台转发”的候选未被采用；选择
 由业务决定写入策略，并准确描述确认语义。

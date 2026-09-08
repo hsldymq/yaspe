@@ -641,6 +641,11 @@ ClickHouse Connector 的具体适配见 [ClickHouse Design](designs/0009-clickho
 - 不通过无限缓冲换取吞吐；
 - 不在没有协议支持时宣称事务或 exactly-once。
 
+M2 必需指标限定为成功 work 吞吐、Kafka 消费与 commit 的位置差及分层缓存数量，
+失败指标延后。位置数值由 Kafka Connector 解释，指标不替代 Runtime 的完成或容量
+判断；记录要求与各层单位见
+[Verification Design §1.11](designs/0008-runtime-verification-and-observability.md#111-m2-最小指标范围)。
+
 ### 7.8 Execution Task / Worker
 
 状态：`Planned`，M1。
@@ -1328,8 +1333,12 @@ failure。Kafka 会话建立/恢复采用 Connector 的有限预算，重复重�
 适配仍待核验，不代表会话恢复已实现或验证。
 
 新 owner 从最后成功持久化的 safe position 恢复。未提交但已产生外部效果的记录
-可能重复，这是当前 at-least-once 保证的已知边界，不得通过让旧 owner 跨
-generation 提交来规避。
+可能重复，这是 M2 条件性 at-least-once 目标的已知边界，不得通过让旧 owner 跨
+generation 提交来规避。Source 重放与保留、Sink 确认配置及故障模型前提以
+[Position Design §1.10](designs/0007-position-and-kafka-rebalance.md#110-at-least-once) 为准；
+弱接收确认不自动等于持久化。验收使用稳定测试身份核对预期输出，并区分确定性、固定
+客户端和隔离真实系统证据，见
+[Verification Design §1.12–1.13](designs/0008-runtime-verification-and-observability.md#112-m2-故障注入验收矩阵)。
 
 ### 17.6 Checkpoint（远期）
 
