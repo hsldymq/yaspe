@@ -28,14 +28,8 @@ Sink 一个也不接受
 
 Sink 接管后失败时，优先保留已经形成的 terminal output，并在 Sink 边界恢复，而不是重新执行 Operator Chain。
 
-交接 API 不向 Sink Connector 暴露 Runtime 内部的 `Work`。Runtime 把每个 terminal output 包装为：
-
-```go
-type SinkItem[T any] struct {
-    Record Record[T]
-    // private Runtime identity
-}
-```
+交接 API 不向 Sink Connector 暴露 Runtime 内部的 `Work`。Runtime 把每个 terminal output
+包装为携带业务 Record 和私有身份的 SinkItem，具体定义见 [sink.go](../../sink.go)。
 
 Connector 接收该 work 产生的完整 `[]SinkItem[T]`；`T` 必须与 Sink 声明的输入类型一致，并由
 Go 泛型在组装 Pipeline 时约束。
@@ -43,38 +37,8 @@ Go 泛型在组装 Pipeline 时约束。
 Connector 使用 `item.Record` 转换目标系统需要的请求，并让原 `SinkItem[T]` 跟随该请求直到 callback，再通过 reporter 原样报告对应 item 的结果。Connector 不解释不透明身份、不维护 records index，也不依赖业务值相等性；因此内容相同的多条 Record 仍可被 Runtime 准确区分。目标系统自己的结构应使用 `KafkaRequest`、`PostgresRow` 等具体名称，避免与 `SinkItem` 混淆。
 
 attempt、generation、Source position、completion 状态和调度信息仍由 Runtime 保存。最终公开
-边界采用每次交接传入绑定式结果报告器：
-
-```go
-type SinkContext interface {
-    LifecycleContext() context.Context
-    CapacityNotifier() SinkCapacityNotifier
-}
-
-type SinkCapacityNotifier interface {
-    NotifyAvailable()
-}
-
-type SinkAcceptStatus uint8
-
-const (
-    SinkAcceptStatusInvalid SinkAcceptStatus = iota
-    SinkAccepted
-    SinkBackpressured
-)
-
-type Sink[T any] interface {
-    Open(runtime SinkContext) error
-
-    Accept(
-        ctx context.Context,
-        items []SinkItem[T],
-        reporter SinkResultReporter[T],
-    ) (SinkAcceptStatus, error)
-
-    Close(ctx context.Context) error
-}
-```
+边界采用每次交接传入绑定式结果报告器。Sink、SinkContext、容量通知和接管状态的具体
+接口见 [sink.go](../../sink.go)，本文维护行为契约而不重复类型声明。
 
 Runtime 创建 `SinkContext` 并对每个 Sink 实例调用一次 `Open`；只有 Open 成功后才启动 Sink Coordinator、Pipeline Worker 和 Source admission。运行期仅 Sink Coordinator 调用 `Accept`。Runtime 最多调用一次 `Close`，Open 失败时不开放数据入口，并按逆序清理已经打开的其他组件。
 
@@ -91,28 +55,8 @@ context 取消与返回竞态以 Accept 的原子线性化结果为准。
 
 只有 `SinkAccepted, nil` 才会使 reporter 对该次交接有效；返回 `SinkBackpressured` 或 error 时，Sink 不得保存或调用它。Runtime 还必须正确处理外部客户端在 `Accept` 返回前同步触发 callback 的竞态：提前到达的报告只能暂存，确认接管成功后才能应用；若最终没有接管，则不得据此终结 work。
 
-结果报告采用一个可增量、可批量调用的方法：
-
-```go
-type SinkOutcome uint8
-
-const (
-    SinkOutcomeInvalid SinkOutcome = iota
-    SinkSucceeded
-    SinkNotApplied
-    SinkUnknown
-)
-
-type SinkItemResult[T any] struct {
-    Item    SinkItem[T]
-    Outcome SinkOutcome
-    Err     error
-}
-
-type SinkResultReporter[T any] interface {
-    Report(results []SinkItemResult[T])
-}
-```
+结果报告采用可增量、可批量调用的 `SinkResultReporter.Report`；每项结果携带原始
+SinkItem、最终 outcome 和错误。具体定义见 [sink.go](../../sink.go)。
 
 `Report` 可以调用一次或多次，每次报告任意数量的 item，不要求按原顺序或一次覆盖整个 work。`SinkSucceeded` 必须携带 nil `Err`；`SinkNotApplied` 和 `SinkUnknown` 必须携带非 nil `Err`。invalid/未知 outcome 或错误的 outcome/error 组合是契约错误。如果外部协议只提供结果状态而没有底层异常，Connector 使用 yaspe 提供的标准哨兵错误；因此 Runtime、日志和失败策略始终能得到具体错误值，但 outcome 仍是外部事实的权威分类。
 
@@ -129,19 +73,16 @@ goroutine 中 panic。reporter fence 后的任何迟到结果只诊断，不再�
 Memory Sink 的定位是 Runtime 同步参考 Sink、结果断言工具、benchmark 终点和本地示例
 输出。它用来验证 terminal output、整组责任交接、并发调用、Sink 失败与 FailJob，
 不提供外部 I/O、异步 completion、batch flush、partial success、position、Retry、持久化或
-exactly-once。下列 `Accept`、`Groups`、`Records` 和 Close 等名称只表达已接受语义，
-不锁定最终公开 Go API。
+exactly-once。具体构造、失败配置与结果 API 见
+[Memory Sink](../../connector/memory/sink.go)，用法见
+[可执行示例](../../connector/memory/sink_example_test.go)。Memory Sink 保留所有成功结果，
+不为累计结果数设置上限；长期吞吐基准仍须使用消费后不累计结果的测试终点。
 
 Runtime 只在整条 Operator Chain 成功后，把一个 work 的全部 terminal outputs 通过一次
-同步调用交给 Memory Sink：
-
-```text
-Accept(group) returns nil
-    → Sink atomically owns and has synchronously completed the whole group
-
-Accept(group) returns error
-    → Sink owns and retains none of the group
-```
+同步调用交给 Memory Sink。Memory Sink 实现统一的 `Sink` 接口，保存整组记录后，在
+`Accept` 返回 `SinkAccepted, nil` 前同步报告每个原始 item 的 `SinkSucceeded`。它不返回
+Backpressured，也不把同步保存伪装成后台异步写入；返回 error 时全组未接管且不调用 reporter。
+Runtime 仍须处理通用接口规定的 pending-accept 同步报告，相关协调行为尚待实现。
 
 成功返回是整组 `Record` 及其可达引用数据的 ownership 转移点；Runtime 之后不得
 修改或复用。返回 error 时 Memory Sink 不得保存组内任何 Record 或引用，ownership 仍属于
@@ -155,6 +96,10 @@ Memory Sink 可以配置固定、确定性失败计划，例如第 N 次接管�
 按预先给定的 error 序列失败。M1 不接受任意用户失败回调，以避免多出一套用户代码
 生命周期、panic 和 records 逃逸契约。每次接管在同一线性化区内先检查生命周期和
 失败计划；若失败则不保存任何值，若成功则一次追加整组。
+
+构造时复制错误序列，各 Sink 独立消费计划；错误对象不做深拷贝。零配置表示成功，固定
+序列耗尽后继续成功，序列与始终失败配置互斥。参数无效、未打开、已关闭或取消的调用
+不消耗失败计划。空 group 是无效输入，Runtime 的零输出 work 应在交接前直接完成。
 
 Memory Sink 必须线程安全并保留 work grouping。单组内记录顺序严格保持；并发 work 的
 group 按实际接管线性化顺序保存。该顺序是可观察实现事实，不是 `Parallelism > 1`
@@ -183,9 +128,33 @@ results remain readable and stable
 Close 才继续；Close 先生效时，后续接管返回可识别的 closed error、不保存数据也不转移
 ownership。正常 Runtime 不应在 Close 后调用接管；该错误不得被静默丢弃。
 
+同步报告属于已接受调用的一部分。Close 停止新接管后等待这些调用返回，等待受传入
+context 限制；报告器未及时返回导致超时时，Sink 保持关闭、结果仍稳定，后续 Close
+可以继续等待。结果追加在锁内完成，报告器在锁外调用，因此报告期间可读取完整快照。
+Memory Sink 不保存 reporter，也不为每个输出启动 goroutine。
+
 某个并发接管返回 error 并触发 FailJob 时，其他已在线性化点成功的 groups 仍然有效，
 不回滚；Runtime 得知 FailJob 后阻止尚未开始的新 Sink handoff，等待已进入的同步调用返回，
 再 Close。Memory Sink 不提供跨 work 事务或回滚。
+
+#### 1.1.2 Memory Sink 实现与验证证据
+
+实现以 [Memory Sink](../../connector/memory/sink.go) 为准：整组同步接管、固定失败计划、
+分组/扁平快照与关闭均已实现。构造不创建外部资源或 goroutine，内部测试暂停点不进入
+公开接口。
+
+- [基础测试](../../connector/memory/sink_test.go)：构造和生命周期、逐项同步报告、整组拒绝、
+  失败计划冻结与隔离、快照结构复制、引用值保留、取消和关闭后结果；
+- [并发测试](../../connector/memory/sink_race_test.go)：接管前后快照、Close 与接管的两种先后
+  顺序、在途同步报告、关闭期限、失败不回滚其他成功组，以及多调用接管和快照/Close 竞争；
+- [可执行示例](../../connector/memory/sink_example_test.go)：接收一组输出并在关闭后读取结果。
+
+测试说明与判定依据保存在各测试注释中，使用私有暂停点、报告器 barrier 和
+`testing/synctest` 控制等待，不依赖 `time.Sleep`。全量
+`go test -race -count=1 -timeout 30s ./...` 与 `go vet ./...` 已通过。
+
+Runtime 的零输出不调用 Sink、失败后阻止新 handoff、pending-accept 激活、work completion
+与统一关闭协调仍待实现和验证。独立 Sink 测试不证明端到端 FailJob 或交付保证。
 
 ### 1.2 有界通知驱动交接
 

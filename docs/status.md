@@ -12,8 +12,8 @@ M1 — 有界并发的 Stateless Runtime。M0 核心语义与项目基线已完�
 ## 当前目标
 
 按已接受契约实现 Memory Source → Operator Chain → Memory Sink 最小链路，并验证有界
-调度、ownership、FailJob、取消与回收。M1 Job Definition 与 Memory Source 已完成；Memory
-Sink 和 Runtime 尚未实现。Kafka、ClickHouse 与 Operator Retry 留在 M2。
+调度、ownership、FailJob、取消与回收。Job Definition、Memory Source 和 Memory Sink 已完成；
+Runtime 最小链路尚未实现。Kafka、ClickHouse 与 Operator Retry 留在 M2。
 
 ## 三维能力状态
 
@@ -25,7 +25,7 @@ Sink 和 Runtime 尚未实现。Kafka、ClickHouse 与 Operator Retry 留在 M2�
 | M1 Reader / Memory Source 语义 | Accepted | Implemented | Race Tested | [Source Design](designs/0003-source-reader-and-admission.md) |
 | M2 Source lifecycle / split control / position commit API | Accepted | Not Started | Not Applicable | [Source Design](designs/0003-source-reader-and-admission.md) |
 | SourceContext 最终失败报告 | Accepted | Not Started | Not Applicable | [Source Design §1.1.2](designs/0003-source-reader-and-admission.md#112-独立的最终失败报告) |
-| M1 同步 Memory Sink 语义 | Accepted | Not Started | Not Applicable | [Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink) |
+| M1 同步 Memory Sink 语义 | Accepted | Implemented | Race Tested | [Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink) |
 | M1 线性 Job Definition | Accepted | Implemented | Race Tested | [Job Design](designs/0002-job-definition-and-runtime-instantiation.md) |
 | M1 Stateless Runtime | Accepted | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
 | M2 Operator work Retry | Accepted | Not Started | Not Applicable | [Failure Design §1](designs/0006-failure-panic-and-shutdown.md#1-失败暂停与恢复) |
@@ -59,11 +59,14 @@ Sink 和 Runtime 尚未实现。Kafka、ClickHouse 与 Operator Retry 留在 M2�
   [SourceWriter](../connector/memory/source_writer.go)：有界提交、非阻塞 FIFO 读取、
   通知、正常结束、独立失败报告和关闭已实现；基础、并发和使用示例的证据见
   [Source Design §1.8](designs/0003-source-reader-and-admission.md#18-memory-source-实现与验证证据)；
-- [Source](../source.go)、[Sink](../sink.go) 和 OperatorLifecycle 定义公共协议；Memory Source
+- [Memory Sink](../connector/memory/sink.go)：整组同步接管与报告、固定失败计划、分组与扁平
+  快照、关闭及竞争测试已实现，证据见
+  [Sink Design §1.1.2](designs/0005-sink-handoff-and-completion.md#112-memory-sink-实现与验证证据)；
+- [Source](../source.go)、[Sink](../sink.go) 和 OperatorLifecycle 定义公共协议；Memory Connector
   使用可控环境验证了组件行为，Runtime 提供的控制、completion 与生命周期协调仍待实现。
 
-尚不存在 Runtime、Memory Sink、position/completion tracker、Kafka 或 ClickHouse 生产实现。
-定义期与独立 Source 测试不证明端到端运行、回收或交付保证。
+尚不存在 Runtime、position/completion tracker、Kafka 或 ClickHouse 生产实现。
+定义期与独立 Connector 测试不证明端到端运行、回收或交付保证。
 
 [franz-go v1.21.6 验证附件](verification/franz-go-v1.21.6/README.md) 是独立 Go module，包含
 七项客户端模拟测试及固定依赖；不属于上述生产实现，根模块测试也不包含它。已观察行为
@@ -247,8 +250,8 @@ at-least-once 带 Source 重放与数据保留、Sink 确认配置、故障消�
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-设计收敛与验证断点)。当前顺序：
 
-1. M1 实现：Job Definition 和 Memory Source 已通过相应测试；接下来实现 Memory Sink，
-   再接入 Runtime 生命周期、调度和 FailJob，完整 Runtime 验收仍待完成；
+1. M1 实现：Job Definition、Memory Source 和 Memory Sink 已通过相应测试；接下来接入
+   Runtime 生命周期、调度和 FailJob，完整 Runtime 验收仍待完成；
 2. Kafka 主要设计已收敛，完整适配验证仍待完成：真实 broker、多实例 eager/cooperative、
    提交超时/重试及旧请求、恢复 timer/迟到事件、默认预取组合和大消息/长期背压。
    已通过的七项与证据限制见 [验证附件](verification/franz-go-v1.21.6/README.md)，详细矩阵
@@ -259,19 +262,22 @@ at-least-once 带 Source 重放与数据保留、Sink 确认配置、故障消�
 
 ## 当前唯一下一步
 
-实现 M1 同步 Memory Sink，落实整组全收或全拒、结果分组与只读快照、确定性失败计划、
-幂等 Close 及并发线性化测试；具体契约见
-[Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink)。
-随后接入 Runtime 最小链路。
+实现 Runtime 的 Memory Source → Operator Chain → Memory Sink 最小链路，落实每次运行
+的组件实例化与生命周期、有界 admission 和调度、attempt 输出暂存、同步 Sink 交接、
+FailJob、取消与统一关闭，以及成功 work 计数。按
+[Job Design](designs/0002-job-definition-and-runtime-instantiation.md)、
+[核心执行模型](designs/0001-core-execution-model.md) 和
+[Verification Design](designs/0008-runtime-verification-and-observability.md) 补齐确定性测试及 benchmark。
 
 ## 最近验证
 
-验证日期：2026-09-08。Job Definition 与独立 Memory Source 已通过相应验证，Runtime 和其他 Connector 行为仍待实现。
+验证日期：2026-09-08。Job Definition 与独立 Memory Source/Sink 已通过相应验证，Runtime 和生产 Connector 行为仍待实现。
 
 - `go test -count=1 ./...` 与 `go test -race -count=1 ./...`：Job 构建、公开 API 编译契约、
   并发派生/Build、fluent 内置转换与已有 Operator 测试通过；
-- `go test -race -count=1 -timeout 30s ./...`：包含 Memory Source 基础、通知、背压、终态竞争、
-  多生产者交付与可执行示例，全部通过；并发等待由 `testing/synctest` 控制；
+- `go test -race -count=1 -timeout 30s ./...`：Memory Source 基础、通知、背压、终态竞争与多
+  生产者交付，以及 Memory Sink 整组交接、失败计划、快照、取消、Close 竞争和使用示例均通过；
+  并发等待由 `testing/synctest` 与 barrier 控制；
 - `go vet ./...`：通过；
 - 2026-09-07 在 Kafka 版本验证附件运行 `go test -race -v -count=1 -timeout 60s ./...`：七项通过，
   原始输出和限定范围见 [验证附件](verification/franz-go-v1.21.6/README.md)；

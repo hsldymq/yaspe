@@ -672,8 +672,8 @@ Superseded   被新的里程碑或方案替代
 
 ## 18. 当前下一步
 
-当前处于 M1。M0 设计与基线已收敛，M1 Job Definition 已实现；接下来按
-[Current Status](status.md) 推进 Memory Connector 和 Runtime 最小链路。尚未完成的实现验证由
+当前处于 M1。M0 设计与基线已收敛，Job Definition 和 Memory Source/Sink 已实现；接下来按
+[Current Status](status.md) 推进 Runtime 最小链路。尚未完成的实现验证由
 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-设计收敛与验证断点)
 单独跟踪，不自动标记已验证或里程碑完成。
 
