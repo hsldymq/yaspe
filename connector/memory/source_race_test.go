@@ -15,22 +15,22 @@ func TestSubmitRacesWithTerminalTransitions(t *testing.T) {
 	for _, terminal := range []string{"finish", "fail", "close"} {
 		t.Run(terminal, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				source, writer := newPair[int](t, 1)
+				source, producer := newPair[int](t, 1)
 				openSource(t, source)
 				cause := errors.New("failure")
 				start := make(chan struct{})
 				submitted, stopped := make(chan error, 1), make(chan error, 1)
 				go func() {
 					<-start
-					submitted <- writer.Submit(context.Background(), 42)
+					submitted <- producer.Submit(context.Background(), 42)
 				}()
 				go func() {
 					<-start
 					switch terminal {
 					case "finish":
-						stopped <- writer.Finish()
+						stopped <- producer.Finish()
 					case "fail":
-						stopped <- writer.Fail(cause)
+						stopped <- producer.Fail(cause)
 					case "close":
 						stopped <- source.Close(context.Background())
 					}
@@ -74,9 +74,9 @@ func TestSubmitRacesWithTerminalTransitions(t *testing.T) {
 // TestFailureRacesWithPublishingFinished 验证 Fail 与 Reader 发布 finished 竞争时只有一个终态生效, 正常结束后不得再报告失败.
 func TestFailureRacesWithPublishingFinished(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		source, writer := newPair[int](t, 1)
+		source, producer := newPair[int](t, 1)
 		runtime := openSource(t, source)
-		requireError(t, writer.Finish(), nil)
+		requireError(t, producer.Finish(), nil)
 		cause := errors.New("failed")
 		start := make(chan struct{})
 		failed := make(chan error, 1)
@@ -87,7 +87,7 @@ func TestFailureRacesWithPublishingFinished(t *testing.T) {
 		read := make(chan readResult, 1)
 		go func() {
 			<-start
-			failed <- writer.Fail(cause)
+			failed <- producer.Fail(cause)
 		}()
 		go func() {
 			<-start
@@ -115,7 +115,7 @@ func TestFailureRacesWithPublishingFinished(t *testing.T) {
 // TestOpenAndConcurrentFailuresReportOneCause 验证 Open 与多个 Fail 并发时只报告一个根因, 且 Reader 返回同一个错误.
 func TestOpenAndConcurrentFailuresReportOneCause(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		source, writer := newPair[int](t, 1)
+		source, producer := newPair[int](t, 1)
 		runtime := &testSourceContext{ctx: context.Background()}
 		start := make(chan struct{})
 		done := make(chan error, 3)
@@ -127,7 +127,7 @@ func TestOpenAndConcurrentFailuresReportOneCause(t *testing.T) {
 		for _, cause := range []error{first, second} {
 			go func() {
 				<-start
-				done <- writer.Fail(cause)
+				done <- producer.Fail(cause)
 			}()
 		}
 		close(start)
@@ -148,7 +148,7 @@ func TestOpenAndConcurrentFailuresReportOneCause(t *testing.T) {
 // TestCloseDoesNotWaitForInProgressFailureReport 验证失败报告暂停在回调中时 Close 仍可完成, 拒绝后续 Fail, 并保留在途报告的根因.
 func TestCloseDoesNotWaitForInProgressFailureReport(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		source, writer := newPair[int](t, 1)
+		source, producer := newPair[int](t, 1)
 		entered := make(chan struct{})
 		release := make(chan struct{})
 		unblock := sync.OnceFunc(func() {
@@ -166,7 +166,7 @@ func TestCloseDoesNotWaitForInProgressFailureReport(t *testing.T) {
 		requireError(t, source.Open(runtime), nil)
 		done := make(chan error, 1)
 		go func() {
-			done <- writer.Fail(cause)
+			done <- producer.Fail(cause)
 		}()
 		<-entered
 		synctest.Wait()
@@ -174,7 +174,7 @@ func TestCloseDoesNotWaitForInProgressFailureReport(t *testing.T) {
 			t.Fatal("test did not hold the failure report")
 		}
 		requireError(t, source.Close(context.Background()), nil)
-		requireError(t, writer.Fail(errors.New("late")), ErrSourceClosed)
+		requireError(t, producer.Fail(errors.New("late")), ErrSourceClosed)
 		if source.state.failure != cause {
 			t.Fatal("Close replaced the failure being reported")
 		}

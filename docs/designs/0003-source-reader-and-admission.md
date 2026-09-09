@@ -1,7 +1,7 @@
 # 0003：Source Reader、Admission 与 Memory Source
 
 状态：Accepted
-最后更新：2026-09-08
+最后更新：2026-09-09
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [ADR-0007](../decisions/0007-layered-source-prefetch-budgets.md) · [ADR-0006](../decisions/0006-source-failure-reporting-and-session-recovery.md)
 
@@ -404,20 +404,20 @@ Memory Source 的定位是 Runtime 参考 Source、确定性测试设施、bench
 它不是生产级内存消息队列，不提供跨进程交付、持久化、position、replay、checkpoint、
 无界缓存或多 Reader 竞争消费。
 
-Memory Source 把 Runtime-facing Source/Reader 与 producer-facing Writer 分开。Runtime 只观察标准
-非阻塞 Reader 契约；测试或本地生产者通过 Writer 动态提交记录、声明正常结束
+Memory Source 把 Runtime-facing Source/Reader 与 producer-facing SourceProducer 分开。Runtime 只观察标准
+非阻塞 Reader 契约；测试或本地生产者通过 SourceProducer 动态提交记录、声明正常结束
 或注入失败。动态有界模式是验证通知竞态与背压的权威参考实现。
 具体构造与读取 API 见 [Source](../../connector/memory/source.go)，生产 API 见
-[SourceWriter](../../connector/memory/source_writer.go)，用法见
+[SourceProducer](../../connector/memory/source_producer.go)，用法见
 [可执行示例](../../connector/memory/example_test.go)。工厂每次应创建一对新的 Source 和
-Writer；本实现不把某次运行的 Writer 当作可复用工厂。
+SourceProducer；本实现不把某次运行的 SourceProducer 当作可复用工厂。
 
-Writer 可在 Open 前提交或声明结束。Open 前注入的失败先在本地锁存，Open 绑定
+SourceProducer 可在 Open 前提交或声明结束。Open 前注入的失败先在本地锁存，Open 绑定
 SourceContext 后报告；Open 后的首个 Fail 直接通过独立入口报告，不等待下一次 TryRead。
 报告接收错误不替换输入根因，Reader 和报告入口始终使用同一个首因。
 
 内部缓冲必须显式配置且按记录数有界；M1 不提供无界模式，参考实现要求容量大于零。
-Writer 允许多 goroutine 并发提交，Reader 仍只有一个 Runtime admission loop。成功提交
+SourceProducer 允许多 goroutine 并发提交，Reader 仍只有一个 Runtime admission loop。成功提交
 形成内部全序，Reader 按该顺序 FIFO 交付；不承诺并发调用按 goroutine 启动时间排序，
 也不承诺等待者公平性。
 
@@ -451,7 +451,7 @@ Runtime 关闭 Source 时丢弃。`Run` 的主根因必须保留注入的原始�
 
 #### 1.7.4 Close 与终态竞争
 
-Close 属于 Runtime-facing Source 生命周期，不暴露给 producer Writer。Runtime 先终止 admission
+Close 属于 Runtime-facing Source 生命周期，不暴露给 SourceProducer。Runtime 先终止 admission
 loop 和 Reader 等待，再执行 Close。Close 幂等、不伪装成正常 finished，并且：
 
 - 拒绝新提交和读取，唤醒所有容量与可用性等待者；
@@ -469,7 +469,7 @@ loop 和 Reader 等待，再执行 Close。Close 幂等、不伪装成正常 fin
   finished，后来的 Fail 不得改写已发布的正常结束事实；
 - Fail 先生效时，后续 Finish 不得把 failed 覆盖为正常结束；
 - 重复 Finish 幂等；重复 Fail 不改变状态且保留第一个根因，后续不同 error 只可作为
-  附加诊断；failed 后 Finish、finished 后 Fail 和 closed 后的 Writer 操作返回可区分的
+  附加诊断；failed 后 Finish、finished 后 Fail 和 closed 后的 SourceProducer 操作返回可区分的
   生命周期错误；
 - Close 使生命周期最终进入 closed，但不改写既有正常或失败根因。
 
@@ -477,17 +477,17 @@ loop 和 Reader 等待，再执行 Close。Close 幂等、不伪装成正常 fin
 ### 1.8 Memory Source 实现与验证证据
 
 实现见 [Source](../../connector/memory/source.go) 与
-[SourceWriter](../../connector/memory/source_writer.go)。内部缓冲按记录数有界，
+[SourceProducer](../../connector/memory/source_producer.go)。内部缓冲按记录数有界，
 Source 本身不创建 goroutine，构造不执行外部 I/O；数据结构以代码为准。
 
 - [基础测试](../../connector/memory/source_test.go)：容量和生命周期校验、FIFO 与引用交接、
   正常 drain、失败优先、首因保持、关闭释放缓存及不持锁调用失败报告；
-- [Writer 测试](../../connector/memory/source_writer_test.go)：容量背压、取消与 deadline、
+- [SourceProducer 测试](../../connector/memory/source_producer_test.go)：容量背压、取消与 deadline、
   所有等待者唤醒、Open 前等待者绑定生命周期、通知先于/晚于等待、通知合并与过期、
   多生产者逐项交付和顺序；
 - [竞态测试](../../connector/memory/source_race_test.go)：Submit 与终态变化、失败与永久 finished、
   Open 与并发 Fail，以及 Close 与在途失败报告；
-- [可执行示例](../../connector/memory/example_test.go)：独立使用 Source / Writer 的基本流程。
+- [可执行示例](../../connector/memory/example_test.go)：独立使用 Source / SourceProducer 的基本流程。
 
 并发等待使用标准库 `testing/synctest` 安排，不依赖 `time.Sleep` 猜测时序；关键状态顺序
 分别验证，同时触发的竞争只断言合法结果，不假定固定胜者。测试需等待所有创建的

@@ -22,16 +22,16 @@ func (exampleSourceContext) ReportFailure(err error) error {
 	return nil
 }
 
-// ExampleNewSource 演示通过 Writer 提交和声明结束, 再由 Source 读取已缓存记录并正常结束.
+// ExampleNewSource 演示通过 Producer 提交和声明结束, 再由 Source 读取已缓存记录并正常结束.
 func ExampleNewSource() {
-	source, writer, err := memory.NewSource[int](2)
+	source, producer, err := memory.NewSource[int](2)
 	if err != nil {
 		panic(err)
 	}
-	if err := writer.Submit(context.Background(), 42); err != nil {
+	if err := producer.Submit(context.Background(), 42); err != nil {
 		panic(err)
 	}
-	if err := writer.Finish(); err != nil {
+	if err := producer.Finish(); err != nil {
 		panic(err)
 	}
 

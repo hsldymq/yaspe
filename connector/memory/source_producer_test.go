@@ -14,14 +14,14 @@ import (
 // TestSubmitBackpressureAndCapacityRelease 验证缓冲满时 Submit 保持等待, 读取释放容量后提交成功且仅交付一次.
 func TestSubmitBackpressureAndCapacityRelease(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		source, writer := newPair[int](t, 1)
+		source, producer := newPair[int](t, 1)
 		openSource(t, source)
-		requireError(t, writer.Submit(context.Background(), 1), nil)
+		requireError(t, producer.Submit(context.Background(), 1), nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		done := make(chan error, 1)
 		go func() {
-			done <- writer.Submit(ctx, 2)
+			done <- producer.Submit(ctx, 2)
 		}()
 		synctest.Wait()
 		if len(done) != 0 || source.state.size != 1 {
@@ -38,15 +38,15 @@ func TestSubmitBackpressureAndCapacityRelease(t *testing.T) {
 // TestSubmitCancellationDoesNotTransferValue 验证等待中的提交可取消, 失败提交不交接或残留输入, nil context 和 nil 失败原因不改变数据状态.
 func TestSubmitCancellationDoesNotTransferValue(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		source, writer := newPair[*int](t, 1)
+		source, producer := newPair[*int](t, 1)
 		openSource(t, source)
 		accepted, rejected := new(int), new(int)
-		requireError(t, writer.Submit(context.Background(), accepted), nil)
+		requireError(t, producer.Submit(context.Background(), accepted), nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		done := make(chan error, 1)
 		go func() {
-			done <- writer.Submit(ctx, rejected)
+			done <- producer.Submit(ctx, rejected)
 		}()
 		synctest.Wait()
 		if len(done) != 0 {
@@ -58,9 +58,9 @@ func TestSubmitCancellationDoesNotTransferValue(t *testing.T) {
 		*rejected = 99
 		requireRead(t, source, yaspe.ReadReady, accepted)
 		requireRead(t, source, yaspe.ReadUnavailable, (*int)(nil))
-		requireError(t, writer.Submit(ctx, rejected), context.Canceled)
-		requireError(t, writer.Submit(nil, rejected), ErrNilContext)
-		requireError(t, writer.Fail(nil), ErrNilFailure)
+		requireError(t, producer.Submit(ctx, rejected), context.Canceled)
+		requireError(t, producer.Submit(nil, rejected), ErrNilContext)
+		requireError(t, producer.Fail(nil), ErrNilFailure)
 		requireRead(t, source, yaspe.ReadUnavailable, (*int)(nil))
 	})
 }
@@ -68,14 +68,14 @@ func TestSubmitCancellationDoesNotTransferValue(t *testing.T) {
 // TestSubmitDeadline 验证满缓冲下 Submit 在调用 deadline 到期时返回超时错误, 不接管该输入.
 func TestSubmitDeadline(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		source, writer := newPair[int](t, 1)
+		source, producer := newPair[int](t, 1)
 		openSource(t, source)
-		requireError(t, writer.Submit(context.Background(), 1), nil)
+		requireError(t, producer.Submit(context.Background(), 1), nil)
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		done := make(chan error, 1)
 		go func() {
-			done <- writer.Submit(ctx, 2)
+			done <- producer.Submit(ctx, 2)
 		}()
 		requireError(t, <-done, context.DeadlineExceeded)
 		requireRead(t, source, yaspe.ReadReady, 1)
@@ -88,33 +88,33 @@ func TestAllBlockedSubmittersWakeOnStop(t *testing.T) {
 	cause := errors.New("source failed")
 	cases := []struct {
 		name string
-		stop func(*Source[int], *SourceWriter[int], context.CancelFunc) error
+		stop func(*Source[int], *SourceProducer[int], context.CancelFunc) error
 		want error
 	}{
 		{
 			name: "finish",
-			stop: func(_ *Source[int], writer *SourceWriter[int], _ context.CancelFunc) error {
-				return writer.Finish()
+			stop: func(_ *Source[int], producer *SourceProducer[int], _ context.CancelFunc) error {
+				return producer.Finish()
 			},
 			want: ErrSourceFinished,
 		},
 		{
 			name: "fail",
-			stop: func(_ *Source[int], writer *SourceWriter[int], _ context.CancelFunc) error {
-				return writer.Fail(cause)
+			stop: func(_ *Source[int], producer *SourceProducer[int], _ context.CancelFunc) error {
+				return producer.Fail(cause)
 			},
 			want: ErrSourceFailed,
 		},
 		{
 			name: "close",
-			stop: func(source *Source[int], _ *SourceWriter[int], _ context.CancelFunc) error {
+			stop: func(source *Source[int], _ *SourceProducer[int], _ context.CancelFunc) error {
 				return source.Close(context.Background())
 			},
 			want: ErrSourceClosed,
 		},
 		{
 			name: "lifecycle cancel",
-			stop: func(_ *Source[int], _ *SourceWriter[int], cancel context.CancelFunc) error {
+			stop: func(_ *Source[int], _ *SourceProducer[int], cancel context.CancelFunc) error {
 				cancel()
 				return nil
 			},
@@ -124,23 +124,23 @@ func TestAllBlockedSubmittersWakeOnStop(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				source, writer := newPair[int](t, 1)
+				source, producer := newPair[int](t, 1)
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
 				runtime := &testSourceContext{ctx: ctx}
 				requireError(t, source.Open(runtime), nil)
-				requireError(t, writer.Submit(context.Background(), 0), nil)
+				requireError(t, producer.Submit(context.Background(), 0), nil)
 				done := make(chan error, 4)
 				for i := range 4 {
 					go func() {
-						done <- writer.Submit(ctx, i+1)
+						done <- producer.Submit(ctx, i+1)
 					}()
 				}
 				synctest.Wait()
 				if len(done) != 0 {
 					t.Fatal("Submit bypassed full buffer")
 				}
-				requireError(t, tc.stop(source, writer, cancel), nil)
+				requireError(t, tc.stop(source, producer, cancel), nil)
 				synctest.Wait()
 				for range 4 {
 					err := <-done
@@ -160,11 +160,11 @@ func TestAllBlockedSubmittersWakeOnStop(t *testing.T) {
 // TestOpenUpdatesAlreadyWaitingSubmitter 验证 Open 前因满缓冲而等待的生产者, 能在 Open 后响应 Source 生命周期取消.
 func TestOpenUpdatesAlreadyWaitingSubmitter(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		source, writer := newPair[int](t, 1)
-		requireError(t, writer.Submit(context.Background(), 1), nil)
+		source, producer := newPair[int](t, 1)
+		requireError(t, producer.Submit(context.Background(), 1), nil)
 		done := make(chan error, 1)
 		go func() {
-			done <- writer.Submit(context.Background(), 2)
+			done <- producer.Submit(context.Background(), 2)
 		}()
 		synctest.Wait()
 		if len(done) != 0 {
@@ -186,36 +186,36 @@ func TestOpenUpdatesAlreadyWaitingSubmitter(t *testing.T) {
 func TestAvailabilityDoesNotLoseWakeup(t *testing.T) {
 	cases := []struct {
 		name   string
-		change func(*Source[int], *SourceWriter[int]) error
+		change func(*Source[int], *SourceProducer[int]) error
 		state  yaspe.ReadState
 		value  int
 		err    error
 	}{
 		{
 			name: "record",
-			change: func(_ *Source[int], w *SourceWriter[int]) error {
-				return w.Submit(context.Background(), 7)
+			change: func(_ *Source[int], p *SourceProducer[int]) error {
+				return p.Submit(context.Background(), 7)
 			},
 			state: yaspe.ReadReady,
 			value: 7,
 		},
 		{
 			name: "finish",
-			change: func(_ *Source[int], w *SourceWriter[int]) error {
-				return w.Finish()
+			change: func(_ *Source[int], p *SourceProducer[int]) error {
+				return p.Finish()
 			},
 			state: yaspe.ReadFinished,
 		},
 		{
 			name: "fail",
-			change: func(_ *Source[int], w *SourceWriter[int]) error {
-				return w.Fail(ErrSourceFailed)
+			change: func(_ *Source[int], p *SourceProducer[int]) error {
+				return p.Fail(ErrSourceFailed)
 			},
 			err: ErrSourceFailed,
 		},
 		{
 			name: "close",
-			change: func(s *Source[int], _ *SourceWriter[int]) error {
+			change: func(s *Source[int], _ *SourceProducer[int]) error {
 				return s.Close(context.Background())
 			},
 			err: ErrSourceClosed,
@@ -225,7 +225,7 @@ func TestAvailabilityDoesNotLoseWakeup(t *testing.T) {
 		for _, order := range []string{"notify before wait", "wait before notify"} {
 			t.Run(tc.name+"/"+order, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
-					source, writer := newPair[int](t, 2)
+					source, producer := newPair[int](t, 2)
 					openSource(t, source)
 					available := source.Available()
 					consumeNotification(t, available)
@@ -236,7 +236,7 @@ func TestAvailabilityDoesNotLoseWakeup(t *testing.T) {
 						close(done)
 					}
 					if order == "notify before wait" {
-						requireError(t, tc.change(source, writer), nil)
+						requireError(t, tc.change(source, producer), nil)
 						go wait()
 					} else {
 						go wait()
@@ -246,7 +246,7 @@ func TestAvailabilityDoesNotLoseWakeup(t *testing.T) {
 							t.Fatal("reader did not wait for state change")
 						default:
 						}
-						requireError(t, tc.change(source, writer), nil)
+						requireError(t, tc.change(source, producer), nil)
 					}
 					synctest.Wait()
 					<-done
@@ -264,11 +264,11 @@ func TestAvailabilityDoesNotLoseWakeup(t *testing.T) {
 
 // TestAvailabilityCoalescesAndMayBeStale 验证多次状态变化可合并成一个通知, 消费过期通知后仍须通过 TryRead 判断数据是否可用.
 func TestAvailabilityCoalescesAndMayBeStale(t *testing.T) {
-	source, writer := newPair[int](t, 2)
+	source, producer := newPair[int](t, 2)
 	openSource(t, source)
 	consumeNotification(t, source.Available())
-	requireError(t, writer.Submit(context.Background(), 1), nil)
-	requireError(t, writer.Submit(context.Background(), 2), nil)
+	requireError(t, producer.Submit(context.Background(), 1), nil)
+	requireError(t, producer.Submit(context.Background(), 2), nil)
 	requireRead(t, source, yaspe.ReadReady, 1)
 	requireRead(t, source, yaspe.ReadReady, 2)
 	consumeNotification(t, source.Available())
@@ -279,14 +279,14 @@ func TestAvailabilityCoalescesAndMayBeStale(t *testing.T) {
 // TestCancelAndCapacityRaceKeepsOwnershipConsistent 验证取消与容量恢复竞争时, Submit 成功才会交付输入, 返回取消错误则不会交付.
 func TestCancelAndCapacityRaceKeepsOwnershipConsistent(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
-		source, writer := newPair[int](t, 1)
+		source, producer := newPair[int](t, 1)
 		openSource(t, source)
-		requireError(t, writer.Submit(context.Background(), 1), nil)
+		requireError(t, producer.Submit(context.Background(), 1), nil)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		done := make(chan error, 1)
 		go func() {
-			done <- writer.Submit(ctx, 2)
+			done <- producer.Submit(ctx, 2)
 		}()
 		synctest.Wait()
 		start := make(chan struct{})
@@ -326,15 +326,15 @@ func TestConcurrentProducersDeliverOnceInProducerOrder(t *testing.T) {
 			sequence int
 		}
 		const producers, perProducer = 8, 40
-		source, writer := newPair[input](t, 3)
+		source, producer := newPair[input](t, 3)
 		openSource(t, source)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
 		var group sync.WaitGroup
-		for producer := range producers {
+		for producerID := range producers {
 			group.Go(func() {
 				for sequence := range perProducer {
-					if err := writer.Submit(ctx, input{producer: producer, sequence: sequence}); err != nil {
+					if err := producer.Submit(ctx, input{producer: producerID, sequence: sequence}); err != nil {
 						t.Errorf("Submit: %v", err)
 						return
 					}
@@ -343,7 +343,7 @@ func TestConcurrentProducersDeliverOnceInProducerOrder(t *testing.T) {
 		}
 		go func() {
 			group.Wait()
-			if err := writer.Finish(); err != nil {
+			if err := producer.Finish(); err != nil {
 				t.Errorf("Finish: %v", err)
 			}
 		}()

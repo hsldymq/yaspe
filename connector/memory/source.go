@@ -27,9 +27,9 @@ type Source[T any] struct {
 	state *sourceState[T]
 }
 
-// NewSource 创建一对独立的 Source 和 Writer, capacity 必须大于零.
-// Writer 可在 Open 前提交和声明结束. 每次工厂调用应创建新的一对实例.
-func NewSource[T any](capacity int) (*Source[T], *SourceWriter[T], error) {
+// NewSource 创建一对独立的 Source 和 Producer, capacity 必须大于零.
+// Producer 可在 Open 前提交和声明结束. 每次工厂调用应创建新的一对实例.
+func NewSource[T any](capacity int) (*Source[T], *SourceProducer[T], error) {
 	if capacity <= 0 {
 		return nil, nil, fmt.Errorf("%w: %d", ErrInvalidCapacity, capacity)
 	}
@@ -38,7 +38,7 @@ func NewSource[T any](capacity int) (*Source[T], *SourceWriter[T], error) {
 		available: make(chan struct{}, 1),
 		changed:   make(chan struct{}),
 	}
-	return &Source[T]{state: state}, &SourceWriter[T]{state: state}, nil
+	return &Source[T]{state: state}, &SourceProducer[T]{state: state}, nil
 }
 
 // Open 绑定 Runtime 环境, 不创建后台任务. 重复 Open 返回错误.

@@ -1,7 +1,7 @@
 # yaspe Living Architecture
 
 文档状态：Living Document  
-最后更新：2026-09-08
+最后更新：2026-09-09
 当前里程碑：M1 — 有界并发的 Stateless Runtime
 关联文档：[Vision](vision.md) · [Roadmap](roadmap.md) · [Current Status](status.md)
 
@@ -486,7 +486,7 @@ instance 内唯一的 string SplitID 和不透明 position；实现 `PositionCom
 
 M1 Memory Source 是 Runtime 参考实现、确定性测试设施、benchmark 输入和本地示例数据源，
 不是生产级队列。它使用动态有界缓冲并分离 Runtime-facing Source 与 producer-facing
-Writer；Writer 提供可取消的背压提交、正常结束和失败注入语义，Close 仍由
+SourceProducer；SourceProducer 提供可取消的背压提交、正常结束和失败注入语义，Close 仍由
 Runtime 管理。正常结束 drain 已缓存记录，失败优先于尚未交接缓存；所有并发操作
 在同一生命周期状态机上线性化。完整定位、ownership、终态竞争和测试契约见
 [Source Design §1.7](designs/0003-source-reader-and-admission.md#17-m1-memory-source)。
