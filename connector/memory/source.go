@@ -38,7 +38,11 @@ func NewSource[T any](capacity int) (*Source[T], *SourceProducer[T], error) {
 		available: make(chan struct{}, 1),
 		changed:   make(chan struct{}),
 	}
-	return &Source[T]{state: state}, &SourceProducer[T]{state: state}, nil
+	return &Source[T]{
+		state: state,
+	}, &SourceProducer[T]{
+		state: state,
+	}, nil
 }
 
 // Open 绑定 Runtime 环境, 不创建后台任务. 重复 Open 返回错误.
@@ -111,7 +115,9 @@ func (s *Source[T]) TryRead() (yaspe.ReadResult[T], error) {
 		return yaspe.ReadResult[T]{}, state.failure
 	}
 	if state.phase == sourceFinished {
-		return yaspe.ReadResult[T]{State: yaspe.ReadFinished}, nil
+		return yaspe.ReadResult[T]{
+			State: yaspe.ReadFinished,
+		}, nil
 	}
 	if err := state.lifecycle.Err(); err != nil {
 		return yaspe.ReadResult[T]{}, err
@@ -126,14 +132,21 @@ func (s *Source[T]) TryRead() (yaspe.ReadResult[T], error) {
 		if full {
 			state.wakeSubmitters()
 		}
-		return yaspe.ReadResult[T]{State: yaspe.ReadReady, Value: value}, nil
+		return yaspe.ReadResult[T]{
+			State: yaspe.ReadReady,
+			Value: value,
+		}, nil
 	}
 	if state.phase == sourceFinishing {
 		state.phase = sourceFinished
 		state.notifyReader()
-		return yaspe.ReadResult[T]{State: yaspe.ReadFinished}, nil
+		return yaspe.ReadResult[T]{
+			State: yaspe.ReadFinished,
+		}, nil
 	}
-	return yaspe.ReadResult[T]{State: yaspe.ReadUnavailable}, nil
+	return yaspe.ReadResult[T]{
+		State: yaspe.ReadUnavailable,
+	}, nil
 }
 
 // Close 同步丢弃未交接的缓存, 唤醒等待者且幂等. 已交接的值不受影响.
@@ -159,6 +172,7 @@ func (s *Source[T]) Close(context.Context) error {
 	return nil
 }
 
+// sourcePhase 描述生产和读取终态, 与是否已绑定 Runtime 的 opened 标记独立.
 type sourcePhase uint8
 
 const (
@@ -169,19 +183,32 @@ const (
 	sourceClosed
 )
 
+// sourceState 是 Source 和 SourceProducer 共享的有界缓冲及生命周期状态.
+// 所有可变字段由 mu 保护, available 的 channel 引用固定且永不关闭.
 type sourceState[T any] struct {
-	mu               sync.Mutex
-	values           []T
-	head             int
-	size             int
-	phase            sourcePhase
-	opened           bool
-	failure          error
+	mu sync.Mutex
+	// 固定容量的环形缓冲, 读取后清空对应槽, Close 时释放整个 slice.
+	values []T
+	// 下一条待交接记录的环形索引.
+	head int
+	// 仍由 Source 持有的记录数, 不包括已经交给 Runtime 的输入.
+	size int
+	// 控制接收, 正常 drain, 失败和关闭; finishing 直到 Reader 发布 finished 才结束.
+	phase sourcePhase
+	// 是否已成功绑定 Runtime 环境, 生产者可以在它为 false 时预装数据.
+	opened bool
+	// 首次注入的原始失败, Reader 与独立报告共用, Close 不覆盖它.
+	failure error
+	// 包含 ErrSourceFailed 和原始根因的错误, 用于拒绝失败后的生产操作.
 	failedSubmission error
-	runtime          yaspe.SourceContext
-	lifecycle        context.Context
-	available        chan struct{}
-	changed          chan struct{}
+	// 独立失败报告的接收环境, Close 时清空引用.
+	runtime yaspe.SourceContext
+	// 已绑定的 Source 生命周期, Submit 也监听其取消, Open 前为 nil.
+	lifecycle context.Context
+	// 读取方的可合并通知, 容量为 1, 仅表示需要重新检查状态.
+	available chan struct{}
+	// 生产者等待的广播代次, 容量恢复或终态变化时关闭并替换.
+	changed chan struct{}
 }
 
 // 在持锁状态下发布通知, 确保读取方醒来时能观察到对应状态.

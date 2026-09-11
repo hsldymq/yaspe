@@ -127,7 +127,9 @@ func TestAllBlockedSubmittersWakeOnStop(t *testing.T) {
 				source, producer := newPair[int](t, 1)
 				ctx, cancel := context.WithCancel(context.Background())
 				defer cancel()
-				runtime := &testSourceContext{ctx: ctx}
+				runtime := &testSourceContext{
+					ctx: ctx,
+				}
 				requireError(t, source.Open(runtime), nil)
 				requireError(t, producer.Submit(context.Background(), 0), nil)
 				done := make(chan error, 4)
@@ -172,7 +174,9 @@ func TestOpenUpdatesAlreadyWaitingSubmitter(t *testing.T) {
 		}
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		requireError(t, source.Open(&testSourceContext{ctx: ctx}), nil)
+		requireError(t, source.Open(&testSourceContext{
+			ctx: ctx,
+		}), nil)
 		synctest.Wait()
 		cancel()
 		synctest.Wait()
@@ -222,7 +226,10 @@ func TestAvailabilityDoesNotLoseWakeup(t *testing.T) {
 		},
 	}
 	for _, tc := range cases {
-		for _, order := range []string{"notify before wait", "wait before notify"} {
+		for _, order := range []string{
+			"notify before wait",
+			"wait before notify",
+		} {
 			t.Run(tc.name+"/"+order, func(t *testing.T) {
 				synctest.Test(t, func(t *testing.T) {
 					source, producer := newPair[int](t, 2)
@@ -334,7 +341,10 @@ func TestConcurrentProducersDeliverOnceInProducerOrder(t *testing.T) {
 		for producerID := range producers {
 			group.Go(func() {
 				for sequence := range perProducer {
-					if err := producer.Submit(ctx, input{producer: producerID, sequence: sequence}); err != nil {
+					if err := producer.Submit(ctx, input{
+						producer: producerID,
+						sequence: sequence,
+					}); err != nil {
 						t.Errorf("Submit: %v", err)
 						return
 					}

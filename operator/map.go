@@ -25,7 +25,9 @@ func NewMap[I, O any](transform MapFunc[I, O]) *Map[I, O] {
 
 // NewMapWithContext 使用可感知 context 且可返回错误的转换函数创建 Map.
 func NewMapWithContext[I, O any](transform MapFuncWithContext[I, O]) *Map[I, O] {
-	return &Map[I, O]{transform: transform}
+	return &Map[I, O]{
+		transform: transform,
+	}
 }
 
 func (m *Map[I, O]) Process(

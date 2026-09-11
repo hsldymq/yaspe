@@ -50,10 +50,14 @@ func TestFluentBuiltins(t *testing.T) {
 	t.Run("map changes type", func(t *testing.T) {
 		op := lastOperator[int, string](t, base.Map(strconv.Itoa))
 		out := &testCollector[string]{}
-		if err := op.Process(context.Background(), Record[int]{Value: 42}, out); err != nil {
+		if err := op.Process(context.Background(), Record[int]{
+			Value: 42,
+		}, out); err != nil {
 			t.Fatal(err)
 		}
-		if !reflect.DeepEqual(out.values, []string{"42"}) {
+		if !reflect.DeepEqual(out.values, []string{
+			"42",
+		}) {
 			t.Fatal(out.values)
 		}
 	})
@@ -62,12 +66,22 @@ func TestFluentBuiltins(t *testing.T) {
 			return v > 0
 		}))
 		out := &testCollector[int]{}
-		for _, v := range []int{-1, 1, 0, 2} {
-			if err := op.Process(context.Background(), Record[int]{Value: v}, out); err != nil {
+		for _, v := range []int{
+			-1,
+			1,
+			0,
+			2,
+		} {
+			if err := op.Process(context.Background(), Record[int]{
+				Value: v,
+			}, out); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if !reflect.DeepEqual(out.values, []int{1, 2}) {
+		if !reflect.DeepEqual(out.values, []int{
+			1,
+			2,
+		}) {
 			t.Fatal(out.values)
 		}
 	})
@@ -76,15 +90,26 @@ func TestFluentBuiltins(t *testing.T) {
 			if v == 0 {
 				return nil
 			}
-			return []string{strconv.Itoa(v), "next"}
+			return []string{
+				strconv.Itoa(v),
+				"next",
+			}
 		}))
 		out := &testCollector[string]{}
-		for _, v := range []int{0, 3} {
-			if err := op.Process(context.Background(), Record[int]{Value: v}, out); err != nil {
+		for _, v := range []int{
+			0,
+			3,
+		} {
+			if err := op.Process(context.Background(), Record[int]{
+				Value: v,
+			}, out); err != nil {
 				t.Fatal(err)
 			}
 		}
-		if !reflect.DeepEqual(out.values, []string{"3", "next"}) {
+		if !reflect.DeepEqual(out.values, []string{
+			"3",
+			"next",
+		}) {
 			t.Fatal(out.values)
 		}
 	})
@@ -106,24 +131,38 @@ func TestFluentContextAndErrorPropagation(t *testing.T) {
 		name   string
 		stream Stream[int]
 	}{
-		{"map", base.MapWithContext(func(got context.Context, v int) (int, error) {
-			check(got, v)
-			return 99, failure
-		})},
-		{"filter", base.FilterWithContext(func(got context.Context, v int) (bool, error) {
-			check(got, v)
-			return true, failure
-		})},
-		{"flatmap", base.FlatMapWithContext(func(got context.Context, v int) ([]int, error) {
-			check(got, v)
-			return []int{1, 2}, failure
-		})},
+		{
+			"map",
+			base.MapWithContext(func(got context.Context, v int) (int, error) {
+				check(got, v)
+				return 99, failure
+			}),
+		},
+		{
+			"filter",
+			base.FilterWithContext(func(got context.Context, v int) (bool, error) {
+				check(got, v)
+				return true, failure
+			}),
+		},
+		{
+			"flatmap",
+			base.FlatMapWithContext(func(got context.Context, v int) ([]int, error) {
+				check(got, v)
+				return []int{
+					1,
+					2,
+				}, failure
+			}),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			op := lastOperator[int, int](t, tc.stream)
 			out := &testCollector[int]{}
-			if err := op.Process(ctx, Record[int]{Value: 5}, out); !errors.Is(err, failure) {
+			if err := op.Process(ctx, Record[int]{
+				Value: 5,
+			}, out); !errors.Is(err, failure) {
 				t.Fatalf("got %v", err)
 			}
 			if out.calls != 0 {
@@ -143,21 +182,47 @@ func TestFluentEmitFailureStopsOutput(t *testing.T) {
 		failAt int
 		want   []int
 	}{
-		{"map", base.Map(func(v int) int {
-			return v
-		}), 1, nil},
-		{"filter", base.Filter(func(int) bool {
-			return true
-		}), 1, nil},
-		{"flatmap", base.FlatMap(func(v int) []int {
-			return []int{v, v + 1, v + 2}
-		}), 2, []int{5}},
+		{
+			"map",
+			base.Map(func(v int) int {
+				return v
+			}),
+			1,
+			nil,
+		},
+		{
+			"filter",
+			base.Filter(func(int) bool {
+				return true
+			}),
+			1,
+			nil,
+		},
+		{
+			"flatmap",
+			base.FlatMap(func(v int) []int {
+				return []int{
+					v,
+					v + 1,
+					v + 2,
+				}
+			}),
+			2,
+			[]int{
+				5,
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			op := lastOperator[int, int](t, tc.stream)
-			out := &testCollector[int]{failAt: tc.failAt, err: failure}
-			if err := op.Process(context.Background(), Record[int]{Value: 5}, out); !errors.Is(err, failure) {
+			out := &testCollector[int]{
+				failAt: tc.failAt,
+				err:    failure,
+			}
+			if err := op.Process(context.Background(), Record[int]{
+				Value: 5,
+			}, out); !errors.Is(err, failure) {
 				t.Fatalf("got %v", err)
 			}
 			if out.calls != tc.failAt || !reflect.DeepEqual(out.values, tc.want) {

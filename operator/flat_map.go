@@ -28,7 +28,9 @@ func NewFlatMap[I, O any](transform FlatMapFunc[I, O]) *FlatMap[I, O] {
 func NewFlatMapWithContext[I, O any](
 	transform FlatMapFuncWithContext[I, O],
 ) *FlatMap[I, O] {
-	return &FlatMap[I, O]{transform: transform}
+	return &FlatMap[I, O]{
+		transform: transform,
+	}
 }
 
 // Process 按转换结果的顺序发送输出, 并在首次 Emit 失败时停止.
@@ -43,7 +45,9 @@ func (f *FlatMap[I, O]) Process(
 	}
 
 	for _, value := range values {
-		if err := output.Emit(yaspe.Record[O]{Value: value}); err != nil {
+		if err := output.Emit(yaspe.Record[O]{
+			Value: value,
+		}); err != nil {
 			return err
 		}
 	}

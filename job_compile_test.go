@@ -34,8 +34,16 @@ func TestJobTypeStateCompilation(t *testing.T) {
 }).Build()`,
 			"",
 		},
-		{"draft cannot build", `yaspe.NewJobDraft("x").Build()`, "Build undefined"},
-		{"stream cannot build", `stream.Build()`, "Build undefined"},
+		{
+			"draft cannot build",
+			`yaspe.NewJobDraft("x").Build()`,
+			"Build undefined",
+		},
+		{
+			"stream cannot build",
+			`stream.Build()`,
+			"Build undefined",
+		},
 		{
 			"sink ends transforms",
 			`stream.SinkToFunc(func() (yaspe.Sink[int], error) {
@@ -85,7 +93,10 @@ func check() {
     })
     _ = stream
     ` + tc.body + "\n}\n"
-			for name, content := range map[string]string{"go.mod": mod, "check.go": source} {
+			for name, content := range map[string]string{
+				"go.mod":   mod,
+				"check.go": source,
+			} {
 				if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0600); err != nil {
 					t.Fatal(err)
 				}

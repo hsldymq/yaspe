@@ -26,7 +26,9 @@ func NewFilter[T any](predicate Predicate[T]) *Filter[T] {
 
 // NewFilterWithContext 使用可感知 context 且可返回错误的 predicate 创建 Filter.
 func NewFilterWithContext[T any](predicate PredicateWithContext[T]) *Filter[T] {
-	return &Filter[T]{predicate: predicate}
+	return &Filter[T]{
+		predicate: predicate,
+	}
 }
 
 // Process 在 predicate 匹配时将原输入记录发送给 Collector.

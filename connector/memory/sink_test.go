@@ -54,13 +54,19 @@ func newTestSink[T any](t *testing.T, options SinkOptions) *Sink[T] {
 
 func openTestSink[T any](t *testing.T, sink *Sink[T]) {
 	t.Helper()
-	requireError(t, sink.Open(testSinkContext{ctx: context.Background()}), nil)
+	requireError(t, sink.Open(testSinkContext{
+		ctx: context.Background(),
+	}), nil)
 }
 
 func sinkItems[T any](values ...T) []yaspe.SinkItem[T] {
 	items := make([]yaspe.SinkItem[T], len(values))
 	for i, value := range values {
-		items[i] = yaspe.SinkItem[T]{Record: yaspe.Record[T]{Value: value}}
+		items[i] = yaspe.SinkItem[T]{
+			Record: yaspe.Record[T]{
+				Value: value,
+			},
+		}
 	}
 	return items
 }
@@ -77,7 +83,12 @@ func acceptOK[T any](t *testing.T, sink *Sink[T], values ...T) {
 // TestNewSink 验证每次构造的结果和失败计划独立, 且互斥失败配置被拒绝.
 func TestNewSink(t *testing.T) {
 	failure := errors.New("failure")
-	invalid, err := NewSink[int](SinkOptions{Failures: []error{nil}, AlwaysFail: failure})
+	invalid, err := NewSink[int](SinkOptions{
+		Failures: []error{
+			nil,
+		},
+		AlwaysFail: failure,
+	})
 	requireError(t, err, ErrInvalidSinkOptions)
 	if invalid != nil {
 		t.Fatal("invalid options returned a sink")
@@ -95,8 +106,13 @@ func TestNewSink(t *testing.T) {
 
 // TestSinkOpenCloseAndInvalidHandles 验证零值, Open 参数与重复调用, 关闭幂等性及关闭后的接管拒绝.
 func TestSinkOpenCloseAndInvalidHandles(t *testing.T) {
-	for _, sink := range []*Sink[int]{nil, {}} {
-		requireError(t, sink.Open(testSinkContext{ctx: context.Background()}), ErrInvalidSink)
+	for _, sink := range []*Sink[int]{
+		nil,
+		{},
+	} {
+		requireError(t, sink.Open(testSinkContext{
+			ctx: context.Background(),
+		}), ErrInvalidSink)
 		requireError(t, sink.Close(context.Background()), ErrInvalidSink)
 		_, err := sink.Accept(context.Background(), sinkItems(1), &testSinkReporter[int]{})
 		requireError(t, err, ErrInvalidSink)
@@ -109,16 +125,22 @@ func TestSinkOpenCloseAndInvalidHandles(t *testing.T) {
 	requireError(t, sink.Open(testSinkContext{}), ErrInvalidSinkInput)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	requireError(t, sink.Open(testSinkContext{ctx: cancelled}), context.Canceled)
+	requireError(t, sink.Open(testSinkContext{
+		ctx: cancelled,
+	}), context.Canceled)
 	_, err := sink.Accept(context.Background(), sinkItems(1), &testSinkReporter[int]{})
 	requireError(t, err, ErrSinkNotOpen)
 	openTestSink(t, sink)
-	requireError(t, sink.Open(testSinkContext{ctx: context.Background()}), ErrSinkAlreadyOpen)
+	requireError(t, sink.Open(testSinkContext{
+		ctx: context.Background(),
+	}), ErrSinkAlreadyOpen)
 	requireError(t, sink.Close(nil), ErrInvalidSinkInput)
 	acceptOK(t, sink, 1, 2)
 	requireError(t, sink.Close(cancelled), nil)
 	requireError(t, sink.Close(context.Background()), nil)
-	requireError(t, sink.Open(testSinkContext{ctx: context.Background()}), ErrSinkClosed)
+	requireError(t, sink.Open(testSinkContext{
+		ctx: context.Background(),
+	}), ErrSinkClosed)
 	reporter := &testSinkReporter[int]{}
 	_, err = sink.Accept(context.Background(), sinkItems(3), reporter)
 	requireError(t, err, ErrSinkClosed)
@@ -144,7 +166,19 @@ func TestSinkAcceptStoresWholeGroupAndReportsSynchronously(t *testing.T) {
 			t.Fatalf("invalid result at %d: %+v", i, result)
 		}
 	}
-	want := [][]yaspe.Record[int]{{{Value: 7}, {Value: 7}, {Value: 8}}}
+	want := [][]yaspe.Record[int]{
+		{
+			{
+				Value: 7,
+			},
+			{
+				Value: 7,
+			},
+			{
+				Value: 8,
+			},
+		},
+	}
 	if !reflect.DeepEqual(sink.Groups(), want) {
 		t.Fatalf("groups = %v, want %v", sink.Groups(), want)
 	}
@@ -159,16 +193,48 @@ func TestSinkViewsPreserveGroupingAndCopySlices(t *testing.T) {
 	openTestSink(t, sink)
 	acceptOK(t, sink, 1, 2)
 	acceptOK(t, sink, 3)
-	wantGroups := [][]yaspe.Record[int]{{{Value: 1}, {Value: 2}}, {{Value: 3}}}
-	wantRecords := []yaspe.Record[int]{{Value: 1}, {Value: 2}, {Value: 3}}
+	wantGroups := [][]yaspe.Record[int]{
+		{
+			{
+				Value: 1,
+			},
+			{
+				Value: 2,
+			},
+		},
+		{
+			{
+				Value: 3,
+			},
+		},
+	}
+	wantRecords := []yaspe.Record[int]{
+		{
+			Value: 1,
+		},
+		{
+			Value: 2,
+		},
+		{
+			Value: 3,
+		},
+	}
 	groups, records := sink.Groups(), sink.Records()
 	if !reflect.DeepEqual(groups, wantGroups) || !reflect.DeepEqual(records, wantRecords) {
 		t.Fatalf("unexpected views: %v, %v", groups, records)
 	}
-	groups[0][0] = yaspe.Record[int]{Value: 99}
+	groups[0][0] = yaspe.Record[int]{
+		Value: 99,
+	}
 	groups[1] = nil
-	groups = append(groups, []yaspe.Record[int]{{Value: 100}})
-	records[0] = yaspe.Record[int]{Value: 101}
+	groups = append(groups, []yaspe.Record[int]{
+		{
+			Value: 100,
+		},
+	})
+	records[0] = yaspe.Record[int]{
+		Value: 101,
+	}
 	if !reflect.DeepEqual(sink.Groups(), wantGroups) || !reflect.DeepEqual(sink.Records(), wantRecords) {
 		t.Fatal("snapshot mutation changed stored slice structure")
 	}
@@ -201,7 +267,13 @@ func TestSinkSnapshotsDoNotDeepCopyValues(t *testing.T) {
 // TestSinkFailurePlanRejectsEntireGroup 验证固定计划逐次消费, 失败组全拒且不报告, 序列耗尽后恢复成功并保留此前结果.
 func TestSinkFailurePlanRejectsEntireGroup(t *testing.T) {
 	failure := errors.New("second group failed")
-	sink := newTestSink[int](t, SinkOptions{Failures: []error{nil, failure, nil}})
+	sink := newTestSink[int](t, SinkOptions{
+		Failures: []error{
+			nil,
+			failure,
+			nil,
+		},
+	})
 	openTestSink(t, sink)
 	acceptOK(t, sink, 1, 2)
 	items := sinkItems(3, 4)
@@ -213,7 +285,20 @@ func TestSinkFailurePlanRejectsEntireGroup(t *testing.T) {
 	items[0].Record.Value = 99
 	acceptOK(t, sink, 5)
 	acceptOK(t, sink, 6)
-	want := []yaspe.Record[int]{{Value: 1}, {Value: 2}, {Value: 5}, {Value: 6}}
+	want := []yaspe.Record[int]{
+		{
+			Value: 1,
+		},
+		{
+			Value: 2,
+		},
+		{
+			Value: 5,
+		},
+		{
+			Value: 6,
+		},
+	}
 	if !reflect.DeepEqual(sink.Records(), want) {
 		t.Fatalf("failed group retained or successful groups rolled back: %v", sink.Records())
 	}
@@ -222,11 +307,18 @@ func TestSinkFailurePlanRejectsEntireGroup(t *testing.T) {
 // TestSinkFailureOptionsAreFrozenAndIndependent 验证构造时复制错误序列, 同一配置创建的多个 Sink 各自消费计划.
 func TestSinkFailureOptionsAreFrozenAndIndependent(t *testing.T) {
 	failure := errors.New("planned")
-	options := SinkOptions{Failures: []error{failure}}
+	options := SinkOptions{
+		Failures: []error{
+			failure,
+		},
+	}
 	first := newTestSink[int](t, options)
 	second := newTestSink[int](t, options)
 	options.Failures[0] = nil
-	for _, sink := range []*Sink[int]{first, second} {
+	for _, sink := range []*Sink[int]{
+		first,
+		second,
+	} {
 		openTestSink(t, sink)
 		_, err := sink.Accept(context.Background(), sinkItems(1), &testSinkReporter[int]{})
 		requireError(t, err, failure)
@@ -237,7 +329,9 @@ func TestSinkFailureOptionsAreFrozenAndIndependent(t *testing.T) {
 // TestSinkAlwaysFail 验证始终失败配置在多次调用中返回原始错误, 不保存或报告任何输入.
 func TestSinkAlwaysFail(t *testing.T) {
 	failure := errors.New("always rejected")
-	sink := newTestSink[int](t, SinkOptions{AlwaysFail: failure})
+	sink := newTestSink[int](t, SinkOptions{
+		AlwaysFail: failure,
+	})
 	openTestSink(t, sink)
 	reporter := &testSinkReporter[int]{}
 	for range 3 {
@@ -254,7 +348,11 @@ func TestSinkAlwaysFail(t *testing.T) {
 // TestSinkInvalidAndCancelledCallsDoNotConsumePlan 验证空组, nil 参数及取消的调用全拒, 不消耗失败计划.
 func TestSinkInvalidAndCancelledCallsDoNotConsumePlan(t *testing.T) {
 	failure := errors.New("first valid call")
-	sink := newTestSink[int](t, SinkOptions{Failures: []error{failure}})
+	sink := newTestSink[int](t, SinkOptions{
+		Failures: []error{
+			failure,
+		},
+	})
 	openTestSink(t, sink)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -265,11 +363,36 @@ func TestSinkInvalidAndCancelledCallsDoNotConsumePlan(t *testing.T) {
 		reporter yaspe.SinkResultReporter[int]
 		want     error
 	}{
-		{context.Background(), nil, reporter, ErrInvalidSinkInput},
-		{context.Background(), []yaspe.SinkItem[int]{}, reporter, ErrInvalidSinkInput},
-		{nil, sinkItems(1), reporter, ErrInvalidSinkInput},
-		{context.Background(), sinkItems(1), nil, ErrInvalidSinkInput},
-		{cancelled, sinkItems(1), reporter, context.Canceled},
+		{
+			context.Background(),
+			nil,
+			reporter,
+			ErrInvalidSinkInput,
+		},
+		{
+			context.Background(),
+			[]yaspe.SinkItem[int]{},
+			reporter,
+			ErrInvalidSinkInput,
+		},
+		{
+			nil,
+			sinkItems(1),
+			reporter,
+			ErrInvalidSinkInput,
+		},
+		{
+			context.Background(),
+			sinkItems(1),
+			nil,
+			ErrInvalidSinkInput,
+		},
+		{
+			cancelled,
+			sinkItems(1),
+			reporter,
+			context.Canceled,
+		},
 	}
 	for _, tc := range cases {
 		status, err := sink.Accept(tc.ctx, tc.items, tc.reporter)
@@ -290,7 +413,9 @@ func TestSinkLifecycleCancellationRejectsNewInput(t *testing.T) {
 	sink := newTestSink[int](t, SinkOptions{})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	requireError(t, sink.Open(testSinkContext{ctx: ctx}), nil)
+	requireError(t, sink.Open(testSinkContext{
+		ctx: ctx,
+	}), nil)
 	acceptOK(t, sink, 1)
 	cancel()
 	reporter := &testSinkReporter[int]{}

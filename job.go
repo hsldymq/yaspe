@@ -28,7 +28,9 @@ type Job struct {
 }
 
 // Name 返回定义时的 Job 名称.
-func (j Job) Name() string { return j.name }
+func (j Job) Name() string {
+	return j.name
+}
 
 // NewJobDraft 开始一个新定义. 空白名称在 Build 时统一报告错误.
 func NewJobDraft(name string) JobDraft {
@@ -43,7 +45,9 @@ func (d JobDraft) From[T any](factory SourceFactory[T]) Stream[T] {
 	return Stream[T]{
 		name:  d.name,
 		valid: d.valid,
-		tail:  newDefinitionNode(nil, sourceAdapter[T]{factory}),
+		tail: newDefinitionNode(nil, sourceAdapter[T]{
+			factory,
+		}),
 	}
 }
 
@@ -121,10 +125,17 @@ func (b JobBuilder) Build() (Job, error) {
 		if i > 0 && nodes[i-1].signature.output != node.signature.input {
 			return fail(i, "incompatible upstream output and input types")
 		}
-		nodes[i] = transformation{id: i, signature: node.signature, adapter: node.adapter}
+		nodes[i] = transformation{
+			id:        i,
+			signature: node.signature,
+			adapter:   node.adapter,
+		}
 		if i > 0 {
 			nodes[i].upstream = &nodes[i-1]
 		}
 	}
-	return Job{name: b.name, nodes: nodes}, nil
+	return Job{
+		name:  b.name,
+		nodes: nodes,
+	}, nil
 }

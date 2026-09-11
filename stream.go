@@ -15,7 +15,9 @@ func (s Stream[T]) Map[O any](transform func(T) O) Stream[O] {
 	if transform == nil {
 		return s.TransformFunc[O](nil)
 	}
-	return s.MapWithContext(func(_ context.Context, value T) (O, error) { return transform(value), nil })
+	return s.MapWithContext(func(_ context.Context, value T) (O, error) {
+		return transform(value), nil
+	})
 }
 
 // MapWithContext 的函数可以感知取消或返回错误. 构建期不会执行该函数.
@@ -24,13 +26,17 @@ func (s Stream[T]) MapWithContext[O any](transform func(context.Context, T) (O, 
 		return s.TransformFunc[O](nil)
 	}
 	return s.TransformFunc(func() (Operator[T, O], error) {
-		return &functionOperator[T, O]{process: func(ctx context.Context, in Record[T], out Collector[O]) error {
-			value, err := transform(ctx, in.Value)
-			if err != nil {
-				return err
-			}
-			return out.Emit(Record[O]{Value: value})
-		}}, nil
+		return &functionOperator[T, O]{
+			process: func(ctx context.Context, in Record[T], out Collector[O]) error {
+				value, err := transform(ctx, in.Value)
+				if err != nil {
+					return err
+				}
+				return out.Emit(Record[O]{
+					Value: value,
+				})
+			},
+		}, nil
 	})
 }
 
@@ -39,7 +45,9 @@ func (s Stream[T]) Filter(predicate func(T) bool) Stream[T] {
 	if predicate == nil {
 		return s.TransformFunc[T](nil)
 	}
-	return s.FilterWithContext(func(_ context.Context, value T) (bool, error) { return predicate(value), nil })
+	return s.FilterWithContext(func(_ context.Context, value T) (bool, error) {
+		return predicate(value), nil
+	})
 }
 
 // FilterWithContext 是可以取消或失败的 Filter.
@@ -48,13 +56,15 @@ func (s Stream[T]) FilterWithContext(predicate func(context.Context, T) (bool, e
 		return s.TransformFunc[T](nil)
 	}
 	return s.TransformFunc(func() (Operator[T, T], error) {
-		return &functionOperator[T, T]{process: func(ctx context.Context, in Record[T], out Collector[T]) error {
-			keep, err := predicate(ctx, in.Value)
-			if err != nil || !keep {
-				return err
-			}
-			return out.Emit(in)
-		}}, nil
+		return &functionOperator[T, T]{
+			process: func(ctx context.Context, in Record[T], out Collector[T]) error {
+				keep, err := predicate(ctx, in.Value)
+				if err != nil || !keep {
+					return err
+				}
+				return out.Emit(in)
+			},
+		}, nil
 	})
 }
 
@@ -63,7 +73,9 @@ func (s Stream[T]) FlatMap[O any](transform func(T) []O) Stream[O] {
 	if transform == nil {
 		return s.TransformFunc[O](nil)
 	}
-	return s.FlatMapWithContext(func(_ context.Context, value T) ([]O, error) { return transform(value), nil })
+	return s.FlatMapWithContext(func(_ context.Context, value T) ([]O, error) {
+		return transform(value), nil
+	})
 }
 
 // FlatMapWithContext 在首次 Emit 失败时停止. 函数可被不同 lane 并发调用.
@@ -72,18 +84,22 @@ func (s Stream[T]) FlatMapWithContext[O any](transform func(context.Context, T) 
 		return s.TransformFunc[O](nil)
 	}
 	return s.TransformFunc(func() (Operator[T, O], error) {
-		return &functionOperator[T, O]{process: func(ctx context.Context, in Record[T], out Collector[O]) error {
-			values, err := transform(ctx, in.Value)
-			if err != nil {
-				return err
-			}
-			for _, value := range values {
-				if err := out.Emit(Record[O]{Value: value}); err != nil {
+		return &functionOperator[T, O]{
+			process: func(ctx context.Context, in Record[T], out Collector[O]) error {
+				values, err := transform(ctx, in.Value)
+				if err != nil {
 					return err
 				}
-			}
-			return nil
-		}}, nil
+				for _, value := range values {
+					if err := out.Emit(Record[O]{
+						Value: value,
+					}); err != nil {
+						return err
+					}
+				}
+				return nil
+			},
+		}, nil
 	})
 }
 
@@ -92,7 +108,9 @@ func (s Stream[T]) Transform[O any](factory OperatorFactory[T, O]) Stream[O] {
 	return Stream[O]{
 		name:  s.name,
 		valid: s.valid,
-		tail:  newDefinitionNode(s.tail, operatorAdapter[T, O]{factory}),
+		tail: newDefinitionNode(s.tail, operatorAdapter[T, O]{
+			factory,
+		}),
 	}
 }
 
@@ -106,7 +124,9 @@ func (s Stream[T]) SinkTo(factory SinkFactory[T]) JobBuilder {
 	return JobBuilder{
 		name:  s.name,
 		valid: s.valid,
-		tail:  newDefinitionNode(s.tail, sinkAdapter[T]{factory}),
+		tail: newDefinitionNode(s.tail, sinkAdapter[T]{
+			factory,
+		}),
 	}
 }
 

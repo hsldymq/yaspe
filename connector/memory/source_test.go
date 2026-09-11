@@ -52,7 +52,9 @@ func newPair[T any](t *testing.T, capacity int) (*Source[T], *SourceProducer[T])
 
 func openSource[T any](t *testing.T, source *Source[T]) *testSourceContext {
 	t.Helper()
-	runtime := &testSourceContext{ctx: context.Background()}
+	runtime := &testSourceContext{
+		ctx: context.Background(),
+	}
 	if err := source.Open(runtime); err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +102,10 @@ func requireNoNotification(t *testing.T, available <-chan struct{}) {
 
 // TestNewSource 验证容量必须为正数, 每次构造得到独立缓冲和容量为 1 的通知 channel.
 func TestNewSource(t *testing.T) {
-	for _, capacity := range []int{-1, 0} {
+	for _, capacity := range []int{
+		-1,
+		0,
+	} {
 		source, producer, err := NewSource[int](capacity)
 		requireError(t, err, ErrInvalidCapacity)
 		if source != nil || producer != nil {
@@ -130,7 +135,9 @@ func TestSourceOpenAndClose(t *testing.T) {
 	requireError(t, source.Open(&testSourceContext{}), ErrNilContext)
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	requireError(t, source.Open(&testSourceContext{ctx: cancelled}), context.Canceled)
+	requireError(t, source.Open(&testSourceContext{
+		ctx: cancelled,
+	}), context.Canceled)
 	runtime := openSource(t, source)
 	requireError(t, source.Open(runtime), ErrSourceAlreadyOpen)
 	requireRead(t, source, yaspe.ReadUnavailable, 0)
@@ -155,8 +162,13 @@ func TestSourceOpenAndClose(t *testing.T) {
 
 // TestInvalidHandles 验证 nil 和零值 Source 或 Producer 返回明确错误, 不暴露可用的通知 channel.
 func TestInvalidHandles(t *testing.T) {
-	for _, source := range []*Source[int]{nil, {}} {
-		requireError(t, source.Open(&testSourceContext{ctx: context.Background()}), ErrInvalidSource)
+	for _, source := range []*Source[int]{
+		nil,
+		{},
+	} {
+		requireError(t, source.Open(&testSourceContext{
+			ctx: context.Background(),
+		}), ErrInvalidSource)
 		requireError(t, source.Close(context.Background()), ErrInvalidSource)
 		_, err := source.TryRead()
 		requireError(t, err, ErrInvalidSource)
@@ -164,7 +176,10 @@ func TestInvalidHandles(t *testing.T) {
 			t.Fatal("invalid Source returned an availability channel")
 		}
 	}
-	for _, producer := range []*SourceProducer[int]{nil, {}} {
+	for _, producer := range []*SourceProducer[int]{
+		nil,
+		{},
+	} {
 		requireError(t, producer.Submit(context.Background(), 1), ErrInvalidSource)
 		requireError(t, producer.Finish(), ErrInvalidSource)
 		requireError(t, producer.Fail(errors.New("failure")), ErrInvalidSource)
@@ -191,7 +206,10 @@ func TestSourceFIFOAndReferenceTransfer(t *testing.T) {
 		}
 	}
 	requireError(t, producer.Submit(context.Background(), third), nil)
-	for _, want := range []*int{second, third} {
+	for _, want := range []*int{
+		second,
+		third,
+	} {
 		result, err := source.TryRead()
 		requireError(t, err, nil)
 		if result.State != yaspe.ReadReady || result.Value != want {
@@ -221,10 +239,17 @@ func TestFinishDrainsPreloadedInput(t *testing.T) {
 
 // TestFailureOverridesBufferedInputAndPreservesFirstCause 验证 Open 前, 接收中及结束中的失败都优先于缓存, 只报告首因一次, 报告错误和 Close 不替换首因.
 func TestFailureOverridesBufferedInputAndPreservesFirstCause(t *testing.T) {
-	for _, when := range []string{"before open", "while accepting", "while finishing"} {
+	for _, when := range []string{
+		"before open",
+		"while accepting",
+		"while finishing",
+	} {
 		t.Run(when, func(t *testing.T) {
 			source, producer := newPair[int](t, 1)
-			runtime := &testSourceContext{ctx: context.Background(), reportErr: errors.New("report rejected")}
+			runtime := &testSourceContext{
+				ctx:       context.Background(),
+				reportErr: errors.New("report rejected"),
+			}
 			if when != "before open" {
 				requireError(t, source.Open(runtime), nil)
 			}
@@ -245,7 +270,10 @@ func TestFailureOverridesBufferedInputAndPreservesFirstCause(t *testing.T) {
 			if err != first || result.State == yaspe.ReadReady {
 				t.Fatalf("TryRead() = %+v, %v; want original failure", result, err)
 			}
-			for _, err := range []error{producer.Submit(context.Background(), 7), producer.Finish()} {
+			for _, err := range []error{
+				producer.Submit(context.Background(), 7),
+				producer.Finish(),
+			} {
 				requireError(t, err, ErrSourceFailed)
 				requireError(t, err, first)
 			}

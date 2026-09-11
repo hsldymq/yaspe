@@ -34,8 +34,16 @@ func ExampleNewSink() {
 		panic(err)
 	}
 	items := []yaspe.SinkItem[int]{
-		{Record: yaspe.Record[int]{Value: 42}},
-		{Record: yaspe.Record[int]{Value: 43}},
+		{
+			Record: yaspe.Record[int]{
+				Value: 42,
+			},
+		},
+		{
+			Record: yaspe.Record[int]{
+				Value: 43,
+			},
+		},
 	}
 	status, err := sink.Accept(context.Background(), items, exampleSinkReporter{})
 	if err != nil || status != yaspe.SinkAccepted {

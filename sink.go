@@ -38,7 +38,10 @@ type SinkItem[T any] struct {
 }
 
 // 使用非零大小的对象, 确保不同身份分配具有独立地址.
-type sinkItemIdentity struct{ marker byte }
+type sinkItemIdentity struct {
+	// 一次输出组内的索引, 还必须与报告器保存的身份指针匹配, 不能单独作为全局身份.
+	index int
+}
 
 // SinkOutcome 是外部效果的最终分类; 零值无效.
 type SinkOutcome uint8

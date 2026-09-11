@@ -31,7 +31,9 @@ func TestMapTransformsRecord(t *testing.T) {
 	})
 
 	output := &collectingCollector[string]{}
-	err := op.Process(context.Background(), yaspe.Record[int]{Value: 42}, output)
+	err := op.Process(context.Background(), yaspe.Record[int]{
+		Value: 42,
+	}, output)
 
 	if err != nil {
 		t.Fatalf("Process() error = %v", err)
@@ -60,7 +62,9 @@ func TestMapDoesNotEmitWhenTransformFails(t *testing.T) {
 
 	output := &collectingCollector[string]{}
 
-	err := op.Process(context.Background(), yaspe.Record[int]{Value: 42}, output)
+	err := op.Process(context.Background(), yaspe.Record[int]{
+		Value: 42,
+	}, output)
 
 	if !errors.Is(err, transformErr) {
 		t.Fatalf("got error %v, want %v", err, transformErr)
@@ -86,7 +90,9 @@ func TestMapReturnsEmitFailure(t *testing.T) {
 		err: emitErr,
 	}
 
-	err := op.Process(context.Background(), yaspe.Record[int]{Value: 42}, output)
+	err := op.Process(context.Background(), yaspe.Record[int]{
+		Value: 42,
+	}, output)
 
 	if !errors.Is(err, emitErr) {
 		t.Fatalf("got error %v, want %v", err, emitErr)
@@ -109,7 +115,9 @@ func TestMapPassesContextToTransform(t *testing.T) {
 
 	output := &collectingCollector[int]{}
 
-	if err := op.Process(ctx, yaspe.Record[int]{Value: 21}, output); err != nil {
+	if err := op.Process(ctx, yaspe.Record[int]{
+		Value: 21,
+	}, output); err != nil {
 		t.Fatalf("Process() error = %v", err)
 	}
 }

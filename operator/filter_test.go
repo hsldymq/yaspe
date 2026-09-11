@@ -15,7 +15,9 @@ func TestFilterEmitsMatchingRecord(t *testing.T) {
 		return value > 0
 	})
 
-	input := yaspe.Record[int]{Value: 42}
+	input := yaspe.Record[int]{
+		Value: 42,
+	}
 	output := &collectingCollector[int]{}
 
 	if err := op.Process(context.Background(), input, output); err != nil {
@@ -41,7 +43,9 @@ func TestFilterDoesNotEmitNonMatchingRecord(t *testing.T) {
 
 	if err := op.Process(
 		context.Background(),
-		yaspe.Record[int]{Value: -1},
+		yaspe.Record[int]{
+			Value: -1,
+		},
 		output,
 	); err != nil {
 		t.Fatalf("Process() error = %v", err)
@@ -70,7 +74,9 @@ func TestFilterWithContextPassesContextToPredicate(t *testing.T) {
 
 	output := &collectingCollector[int]{}
 
-	if err := op.Process(ctx, yaspe.Record[int]{Value: 42}, output); err != nil {
+	if err := op.Process(ctx, yaspe.Record[int]{
+		Value: 42,
+	}, output); err != nil {
 		t.Fatalf("Process() error = %v", err)
 	}
 
@@ -90,7 +96,9 @@ func TestFilterWithContextDoesNotEmitWhenPredicateFails(t *testing.T) {
 	})
 
 	output := &collectingCollector[int]{}
-	err := op.Process(context.Background(), yaspe.Record[int]{Value: 42}, output)
+	err := op.Process(context.Background(), yaspe.Record[int]{
+		Value: 42,
+	}, output)
 
 	if !errors.Is(err, predicateErr) {
 		t.Fatalf("got error %v, want %v", err, predicateErr)
@@ -108,8 +116,12 @@ func TestFilterReturnsEmitFailure(t *testing.T) {
 		return true
 	})
 
-	output := &collectingCollector[int]{err: emitErr}
-	err := op.Process(context.Background(), yaspe.Record[int]{Value: 42}, output)
+	output := &collectingCollector[int]{
+		err: emitErr,
+	}
+	err := op.Process(context.Background(), yaspe.Record[int]{
+		Value: 42,
+	}, output)
 
 	if !errors.Is(err, emitErr) {
 		t.Fatalf("got error %v, want %v", err, emitErr)

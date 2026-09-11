@@ -12,7 +12,11 @@ import (
 
 // TestSubmitRacesWithTerminalTransitions 验证 Submit 与 Finish, Fail 或 Close 竞争时, 返回结果, 缓存责任和最终读取状态保持一致.
 func TestSubmitRacesWithTerminalTransitions(t *testing.T) {
-	for _, terminal := range []string{"finish", "fail", "close"} {
+	for _, terminal := range []string{
+		"finish",
+		"fail",
+		"close",
+	} {
 		t.Run(terminal, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				source, producer := newPair[int](t, 1)
@@ -92,7 +96,10 @@ func TestFailureRacesWithPublishingFinished(t *testing.T) {
 		go func() {
 			<-start
 			result, err := source.TryRead()
-			read <- readResult{result: result, err: err}
+			read <- readResult{
+				result: result,
+				err:    err,
+			}
 		}()
 		close(start)
 		synctest.Wait()
@@ -116,7 +123,9 @@ func TestFailureRacesWithPublishingFinished(t *testing.T) {
 func TestOpenAndConcurrentFailuresReportOneCause(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		source, producer := newPair[int](t, 1)
-		runtime := &testSourceContext{ctx: context.Background()}
+		runtime := &testSourceContext{
+			ctx: context.Background(),
+		}
 		start := make(chan struct{})
 		done := make(chan error, 3)
 		first, second := errors.New("first contender"), errors.New("second contender")
@@ -124,7 +133,10 @@ func TestOpenAndConcurrentFailuresReportOneCause(t *testing.T) {
 			<-start
 			done <- source.Open(runtime)
 		}()
-		for _, cause := range []error{first, second} {
+		for _, cause := range []error{
+			first,
+			second,
+		} {
 			go func() {
 				<-start
 				done <- producer.Fail(cause)

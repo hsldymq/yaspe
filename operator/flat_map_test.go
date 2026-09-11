@@ -37,7 +37,9 @@ func TestFlatMapEmitsAllValuesInOrder(t *testing.T) {
 	output := &collectingCollector[string]{}
 	if err := op.Process(
 		context.Background(),
-		yaspe.Record[string]{Value: "one two three"},
+		yaspe.Record[string]{
+			Value: "one two three",
+		},
 		output,
 	); err != nil {
 		t.Fatalf("Process() error = %v", err)
@@ -48,7 +50,11 @@ func TestFlatMapEmitsAllValuesInOrder(t *testing.T) {
 		got = append(got, record.Value)
 	}
 
-	want := []string{"one", "two", "three"}
+	want := []string{
+		"one",
+		"two",
+		"three",
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got values %v, want %v", got, want)
 	}
@@ -63,7 +69,9 @@ func TestFlatMapEmitsNothingForEmptyResult(t *testing.T) {
 	output := &collectingCollector[string]{}
 	if err := op.Process(
 		context.Background(),
-		yaspe.Record[int]{Value: 42},
+		yaspe.Record[int]{
+			Value: 42,
+		},
 		output,
 	); err != nil {
 		t.Fatalf("Process() error = %v", err)
@@ -87,11 +95,15 @@ func TestFlatMapWithContextPassesContextToTransform(t *testing.T) {
 			return nil, errors.New("context not propagated")
 		}
 
-		return []int{value}, nil
+		return []int{
+			value,
+		}, nil
 	})
 
 	output := &collectingCollector[int]{}
-	if err := op.Process(ctx, yaspe.Record[int]{Value: 42}, output); err != nil {
+	if err := op.Process(ctx, yaspe.Record[int]{
+		Value: 42,
+	}, output); err != nil {
 		t.Fatalf("Process() error = %v", err)
 	}
 }
@@ -107,7 +119,9 @@ func TestFlatMapWithContextDoesNotEmitWhenTransformFails(t *testing.T) {
 	})
 
 	output := &collectingCollector[string]{}
-	err := op.Process(context.Background(), yaspe.Record[int]{Value: 42}, output)
+	err := op.Process(context.Background(), yaspe.Record[int]{
+		Value: 42,
+	}, output)
 
 	if !errors.Is(err, transformErr) {
 		t.Fatalf("got error %v, want %v", err, transformErr)
@@ -122,14 +136,21 @@ func TestFlatMapWithContextDoesNotEmitWhenTransformFails(t *testing.T) {
 func TestFlatMapStopsAfterEmitFailure(t *testing.T) {
 	emitErr := errors.New("emit failed")
 	op := operator.NewFlatMap(func(int) []string {
-		return []string{"one", "two", "three", "four"}
+		return []string{
+			"one",
+			"two",
+			"three",
+			"four",
+		}
 	})
 
 	output := &failingAtCollector[string]{
 		failAt: 3,
 		err:    emitErr,
 	}
-	err := op.Process(context.Background(), yaspe.Record[int]{Value: 42}, output)
+	err := op.Process(context.Background(), yaspe.Record[int]{
+		Value: 42,
+	}, output)
 
 	if !errors.Is(err, emitErr) {
 		t.Fatalf("got error %v, want %v", err, emitErr)
@@ -144,7 +165,10 @@ func TestFlatMapStopsAfterEmitFailure(t *testing.T) {
 		got = append(got, record.Value)
 	}
 
-	want := []string{"one", "two"}
+	want := []string{
+		"one",
+		"two",
+	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got emitted values %v, want %v", got, want)
 	}

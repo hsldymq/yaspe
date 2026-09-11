@@ -41,7 +41,10 @@ func TestSinkSnapshotAroundAcceptance(t *testing.T) {
 		done := make(chan acceptResult, 1)
 		go func() {
 			status, err := sink.Accept(context.Background(), sinkItems(1, 2, 3), &testSinkReporter[int]{})
-			done <- acceptResult{status: status, err: err}
+			done <- acceptResult{
+				status: status,
+				err:    err,
+			}
 		}()
 		<-entered
 		synctest.Wait()
@@ -76,7 +79,10 @@ func TestSinkCloseWinsBeforeAcceptance(t *testing.T) {
 		done := make(chan acceptResult, 1)
 		go func() {
 			status, err := sink.Accept(context.Background(), sinkItems(1, 2), reporter)
-			done <- acceptResult{status: status, err: err}
+			done <- acceptResult{
+				status: status,
+				err:    err,
+			}
 		}()
 		<-entered
 		synctest.Wait()
@@ -112,7 +118,10 @@ func TestSinkCloseWaitsForAcceptedReport(t *testing.T) {
 		accepted := make(chan acceptResult, 1)
 		go func() {
 			status, err := sink.Accept(ctx, sinkItems(1, 2), reporter)
-			accepted <- acceptResult{status: status, err: err}
+			accepted <- acceptResult{
+				status: status,
+				err:    err,
+			}
 		}()
 		<-entered
 		cancel()
@@ -126,7 +135,14 @@ func TestSinkCloseWaitsForAcceptedReport(t *testing.T) {
 		if len(closed) != 0 || len(accepted) != 0 {
 			t.Fatal("Close or Accept returned before synchronous report completed")
 		}
-		want := []yaspe.Record[int]{{Value: 1}, {Value: 2}}
+		want := []yaspe.Record[int]{
+			{
+				Value: 1,
+			},
+			{
+				Value: 2,
+			},
+		}
 		if !reflect.DeepEqual(sink.Records(), want) {
 			t.Fatal("accepted group was not visible as a whole")
 		}
@@ -163,7 +179,10 @@ func TestSinkCloseDeadlineKeepsResultsStable(t *testing.T) {
 		accepted := make(chan acceptResult, 1)
 		go func() {
 			status, err := sink.Accept(context.Background(), sinkItems(1), reporter)
-			accepted <- acceptResult{status: status, err: err}
+			accepted <- acceptResult{
+				status: status,
+				err:    err,
+			}
 		}()
 		<-entered
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -186,7 +205,12 @@ func TestSinkCloseDeadlineKeepsResultsStable(t *testing.T) {
 func TestSinkFailureDoesNotRollBackAcceptedGroups(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		failure := errors.New("second accept failed")
-		sink := newTestSink[int](t, SinkOptions{Failures: []error{nil, failure}})
+		sink := newTestSink[int](t, SinkOptions{
+			Failures: []error{
+				nil,
+				failure,
+			},
+		})
 		openTestSink(t, sink)
 		entered, release := make(chan struct{}), make(chan struct{})
 		unblock := sync.OnceFunc(func() {
@@ -202,7 +226,10 @@ func TestSinkFailureDoesNotRollBackAcceptedGroups(t *testing.T) {
 		done := make(chan acceptResult, 1)
 		go func() {
 			status, err := sink.Accept(context.Background(), sinkItems(1, 2), reporter)
-			done <- acceptResult{status: status, err: err}
+			done <- acceptResult{
+				status: status,
+				err:    err,
+			}
 		}()
 		<-entered
 		rejected := &testSinkReporter[int]{}
@@ -225,7 +252,10 @@ func TestSinkFailureDoesNotRollBackAcceptedGroups(t *testing.T) {
 
 // TestSinkConcurrentAcceptSnapshotsAndClose 验证并发接管, 快照和关闭时每组全收或全拒, 最终快照与成功调用一一对应且保持组内顺序.
 func TestSinkConcurrentAcceptSnapshotsAndClose(t *testing.T) {
-	for _, mode := range []string{"close during calls", "close after calls"} {
+	for _, mode := range []string{
+		"close during calls",
+		"close after calls",
+	} {
 		t.Run(mode, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
 				const workers, iterations = 8, 20
@@ -247,7 +277,14 @@ func TestSinkConcurrentAcceptSnapshotsAndClose(t *testing.T) {
 							id := worker*iterations + i
 							reporter := &testSinkReporter[int]{}
 							status, err := sink.Accept(context.Background(), sinkItems(id, -id-1), reporter)
-							done <- outcome{id: id, result: acceptResult{status: status, err: err}, reports: len(reporter.batches)}
+							done <- outcome{
+								id: id,
+								result: acceptResult{
+									status: status,
+									err:    err,
+								},
+								reports: len(reporter.batches),
+							}
 						}
 					})
 				}
