@@ -1,7 +1,7 @@
 # 0006：Failure、Panic 与 Shutdown
 
 状态：Accepted
-最后更新：2026-09-07
+最后更新：2026-09-11
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Sink Handoff](0005-sink-handoff-and-completion.md)
 
@@ -159,28 +159,10 @@ Source 经 `SourceContext.ReportFailure` 独立报告的最终错误也进入此
 Connector 在最终报告前执行已接受的有限会话恢复，不属于 Operator Retry；报告最终失败
 后不能在当前 Run 中复活 Source。
 
-`RunError` 是 `Run` 返回前冻结的不可变快照，概念接口为：
-
-```go
-type RunError struct {
-    // fields are private
-}
-
-func (e *RunError) Error() string
-func (e *RunError) Unwrap() []error
-func (e *RunError) Primary() error
-func (e *RunError) ActiveFailures() []WorkFailure
-func (e *RunError) Secondary() []error
-
-type WorkFailure struct {
-    // fields are private
-}
-
-func (f WorkFailure) FirstError() error
-func (f WorkFailure) LastError() error
-func (f WorkFailure) Attempts() int
-func (f WorkFailure) Elapsed() time.Duration
-```
+`RunError` 是 `Run` 返回前冻结的不可变快照，具体类型与查询方法见
+[runtime_error.go](../../runtime_error.go)。当前 FailJob 路径已实现 primary 与 secondary 因果；
+由于 Operator Retry 尚未实现，实际运行返回的 ActiveFailures 为空，不能将类型定义或快照
+查询测试当作 active failure collection 的运行验证。
 
 `Primary()` 恰好返回一个非 nil error，表示第一个使 Run 开始停止或最终不能成功返回的原因：
 
@@ -239,7 +221,9 @@ ownership 收尾协议，不改变普通 FailJob 规则。
 
 正常停止与 FailJob 共用同一套有界关闭协调机制，但收敛范围不同：
 
-- 正常停止在期限内允许已开始的 work 完成 Chain 并把 terminal output 交给 Sink；
+- 正常 EOF 或显式优雅停止在期限内完成应保留的输入与输出；stdio 的显式停止还需交付
+  Source 已缓冲的记录、处理 queued work，详细顺序见
+  [stdio Design §4](0010-stdio-and-graceful-stop.md#4-优雅停止顺序)；
 - 普通 FailJob 不启动 queued work，取消尚未把 terminal output 交给 Sink 的 started work，
   不再制造新的外部 effect；
 - 两者都在期限内 drain 已由 Sink 接管的操作，并允许可信 completion 推进和
@@ -247,6 +231,11 @@ ownership 收尾协议，不改变普通 FailJob 规则。
 - FailJob 的 `Run` 结果始终保留第一个触发终止的 error 作为 primary/root cause；停止期间
   出现的取消、Close、超时或其他错误作为 secondary errors 附加，聚合结果必须允许调用者
   通过 `errors.Is/As` 识别 primary 与每个 secondary error。
+
+显式优雅停止是独立于宿主 context 取消的行为，决定见
+[ADR-0009](../decisions/0009-separate-graceful-stop-from-cancellation.md)。当前 Runtime 已实现
+正常 EOF drain 和 context 取消后的失败收尾，尚未实现外部请求“停止读取后继续处理”的入口。
+首次 Ctrl+C 的信号接线不得直接复用 Run context 的取消来声称支持优雅停止。
 
 ### 2.2 panic 边界与分类
 
@@ -294,3 +283,14 @@ Runtime 必须保证自身可控的等待都响应取消并回收。若用户代
 shutdown deadline 防止 `Run` 永久卡住；此时允许仍无法强制终止的 goroutine 存活，但必须
 返回 `ShutdownTimeoutError`、报告泄漏位置并用终态 fence 隔离其迟到动作。实现和测试不得
 把这种结果报告为正常、完整回收。
+
+
+## 3. 实现与验证证据
+
+FailJob、停止预算与最终冻结见 [Runtime](../../runtime.go)，组件启动回滚和逆序关闭见
+[执行流程](../../runtime_execute.go)，panic 边界见 [类型适配](../../runtime_adapter.go)。
+[核心测试](../../runtime_test.go) 和 [控制测试](../../runtime_control_test.go) 覆盖取消、关闭错误、
+Source 根因去重、同步 Sink 多错误、用户/内部 panic、关闭期限和迟到事件隔离。
+
+Operator Retry 和异步 Sink 在途恢复仍待实现。超时测试刻意保留不响应取消的组件，断言
+Run 返回超时且冻结结果不变，再由测试释放组件；不声称 Go 可以强制终止任意用户 goroutine。

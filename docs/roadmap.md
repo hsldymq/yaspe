@@ -1,7 +1,7 @@
 # yaspe Roadmap
 
 文档状态：Living Document  
-最后更新：2026-09-08
+最后更新：2026-09-11
 关联文档：[vision.md](vision.md) · [architecture.md](architecture.md) · [status.md](status.md)
 
 ## 1. Roadmap 的目的
@@ -142,6 +142,8 @@ M0 检查行为契约和验收方法是否收敛，不要求尚未实现的 Runt
 ### 范围
 
 - Memory Source 和线程安全的 Memory Sink；
+- stdio 实用扩展：自定义输入切分、输出失败不重试，以及显式停止输入后 drain 的命令行用法，
+  见 [stdio Design](designs/0010-stdio-and-graceful-stop.md)；具体 API 与 I/O 适配尚待细化；
 - Map、Filter 和有限输出的 FlatMap；
 - 用户定义拓扑与可执行对象的基本分离；
 - 有界输入队列和可配置 Worker Pool；
@@ -672,8 +674,8 @@ Superseded   被新的里程碑或方案替代
 
 ## 18. 当前下一步
 
-当前处于 M1。M0 设计与基线已收敛，Job Definition 和 Memory Source/Sink 已实现；接下来按
-[Current Status](status.md) 推进 Runtime 最小链路。尚未完成的实现验证由
+当前处于 M1。Job Definition、Memory Source/Sink 与 Runtime 最小链路已实现；接下来按
+[Current Status](status.md) 优先细化 stdio 与显式优雅停止扩展，M1 收尾复核与正式多轮基准基线仍待完成。尚未完成的实现验证由
 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-设计收敛与验证断点)
 单独跟踪，不自动标记已验证或里程碑完成。
 

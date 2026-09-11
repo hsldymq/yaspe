@@ -1,6 +1,6 @@
 # yaspe Current Status
 
-最后更新：2026-09-09
+最后更新：2026-09-11
 
 本文是动态交接快照，不是完整设计记录。完整契约见正式 Design，决定背景和取舍见
 [决策索引](decisions/README.md)，维护规则见 [Documentation Governance](governance.md)。
@@ -11,25 +11,28 @@ M1 — 有界并发的 Stateless Runtime。M0 核心语义与项目基线已完�
 
 ## 当前目标
 
-按已接受契约实现 Memory Source → Operator Chain → Memory Sink 最小链路，并验证有界
-调度、ownership、FailJob、取消与回收。Job Definition、Memory Source 和 Memory Sink 已完成；
-Runtime 最小链路尚未实现。Kafka、ClickHouse 与 Operator Retry 留在 M2。
+Memory Source → Operator Chain → Memory Sink 最小链路已实现并通过 race 测试，包括有界
+调度、ownership、FailJob、取消与关闭。当前优先细化 stdio Connector 和显式优雅停止的
+接口及 I/O 适配，基本行为已接受但尚未实现。M1 收尾复核与多轮基准基线仍待完成，
+里程碑尚未标记完成。Kafka、ClickHouse、position、异步 completion 和 Operator Retry 留在 M2。
 
 ## 三维能力状态
 
 | 能力 | Design | Implementation | Verification | 权威位置 |
 |---|---|---|---|---|
 | Record / Operator | Accepted | Implemented | Unit Tested | [Operator Design §1](designs/0004-operator-attempt-and-collector.md#1-collector-生命周期与并发) |
-| Collector scope-bound context API | Accepted | Implemented | Unit Tested | [Operator Design §1.3](designs/0004-operator-attempt-and-collector.md#13-emit-契约) |
+| Collector scope-bound context API | Accepted | Implemented | Race Tested | [Operator Design §1.3](designs/0004-operator-attempt-and-collector.md#13-emit-契约) |
 | Map / Filter / FlatMap | Accepted | Implemented | Unit Tested | [Operator Design §2](designs/0004-operator-attempt-and-collector.md#2-operator-chain-与-work-attempt-边界) |
 | M1 Reader / Memory Source 语义 | Accepted | Implemented | Race Tested | [Source Design](designs/0003-source-reader-and-admission.md) |
 | M2 Source lifecycle / split control / position commit API | Accepted | Not Started | Not Applicable | [Source Design](designs/0003-source-reader-and-admission.md) |
-| SourceContext 最终失败报告 | Accepted | Not Started | Not Applicable | [Source Design §1.1.2](designs/0003-source-reader-and-admission.md#112-独立的最终失败报告) |
+| SourceContext 最终失败报告 | Accepted | Implemented | Race Tested | [Source Design §1.1.2](designs/0003-source-reader-and-admission.md#112-独立的最终失败报告) |
 | M1 同步 Memory Sink 语义 | Accepted | Implemented | Race Tested | [Sink Design §1.1.1](designs/0005-sink-handoff-and-completion.md#111-m1-同步-memory-sink) |
 | M1 线性 Job Definition | Accepted | Implemented | Race Tested | [Job Design](designs/0002-job-definition-and-runtime-instantiation.md) |
-| M1 Stateless Runtime | Accepted | Not Started | Not Applicable | [Verification Design §2.1](designs/0008-runtime-verification-and-observability.md#21-m1-实现前必须收敛) |
+| M1 Stateless Runtime 最小链路 | Accepted | Implemented | Race Tested | [Verification Design §4](designs/0008-runtime-verification-and-observability.md#4-runtime-最小链路实现与证据) |
+| stdio Connector 基本行为 | Accepted（API / I/O 细节待细化） | Not Started | Not Applicable | [stdio Design](designs/0010-stdio-and-graceful-stop.md) |
+| 显式优雅停止与信号升级 | Accepted（API 待细化） | Not Started | Not Applicable | [ADR-0009](decisions/0009-separate-graceful-stop-from-cancellation.md) · [stdio Design §4](designs/0010-stdio-and-graceful-stop.md#4-优雅停止顺序) |
 | M2 Operator work Retry | Accepted | Not Started | Not Applicable | [Failure Design §1](designs/0006-failure-panic-and-shutdown.md#1-失败暂停与恢复) |
-| 统一 RunError 与多错误因果 | Accepted | Not Started | Not Applicable | [Failure Design §1.7](designs/0006-failure-panic-and-shutdown.md#17-公开-runerror) |
+| 统一 RunError 与多错误因果 | Accepted | Implemented（Retry active collection 待实现） | Race Tested | [Failure Design §1.7](designs/0006-failure-panic-and-shutdown.md#17-公开-runerror) |
 | M2 Position / Completion | Accepted | Not Started | Not Applicable | [Position Design](designs/0007-position-and-kafka-rebalance.md) · [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | 异步 Sink 协议 | Accepted | Not Started | Not Applicable | [Sink Design](designs/0005-sink-handoff-and-completion.md) |
 | Kafka Consumer Group / Revoke 时间预算 | Accepted | Not Started | Not Applicable | [ADR-0005](decisions/0005-connector-owned-revoke-budget.md) · [Source Design §1.3.1](designs/0003-source-reader-and-admission.md#131-split-control-边界) |
@@ -62,11 +65,13 @@ Runtime 最小链路尚未实现。Kafka、ClickHouse 与 Operator Retry 留在 
 - [Memory Sink](../connector/memory/sink.go)：整组同步接管与报告、固定失败计划、分组与扁平
   快照、关闭及竞争测试已实现，证据见
   [Sink Design §1.1.2](designs/0005-sink-handoff-and-completion.md#112-memory-sink-实现与验证证据)；
-- [Source](../source.go)、[Sink](../sink.go) 和 OperatorLifecycle 定义公共协议；Memory Connector
-  使用可控环境验证了组件行为，Runtime 提供的控制、completion 与生命周期协调仍待实现。
+- [Runtime](../runtime.go)、[执行调度](../runtime_execute.go)、[类型适配](../runtime_adapter.go)、
+  [Source 环境](../runtime_source.go)、[同步 Sink 适配](../runtime_sink.go) 与
+  [错误快照](../runtime_error.go)：无 position / 同步完成链路已实现；测试与基准入口见
+  [Verification Design §4](designs/0008-runtime-verification-and-observability.md#4-runtime-最小链路实现与证据)。
 
-尚不存在 Runtime、position/completion tracker、Kafka 或 ClickHouse 生产实现。
-定义期与独立 Connector 测试不证明端到端运行、回收或交付保证。
+position/ownership、异步 completion、Operator Retry、Kafka 和 ClickHouse 生产实现仍不存在。
+内存链路测试不证明生产 Connector 的恢复或交付保证。
 
 [franz-go v1.21.6 验证附件](verification/franz-go-v1.21.6/README.md) 是独立 Go module，包含
 七项客户端模拟测试及固定依赖；不属于上述生产实现，根模块测试也不包含它。已观察行为
@@ -241,6 +246,12 @@ M2 最小指标已接受：成功 work 吞吐量、每个 Kafka partition 的消
 错误报告和故障测试继续有效，详见
 [Verification Design §1.11](designs/0008-runtime-verification-and-observability.md#111-m2-最小指标范围)。
 
+stdio 已确认：输入格式中立、可自定义切分、默认按行并保留无换行尾部；允许关闭输入句柄
+后 drain 已有记录与输出；首次 Ctrl+C 请求优雅停止，再次信号或超时终止等待；写出失败
+不重试。现有 Run context 取消继续采用 FailJob，不能代替尚未实现的显式停止入口。
+公开 API、记录类型与输出分隔配置、缓冲策略和实际 I/O 退出方式见
+[stdio Design §6](designs/0010-stdio-and-graceful-stop.md#6-实现前待细化项)。
+
 ## 当前开放问题与顺序
 
 M2 验收设计已接受：按既有契约在 Source、Operator、Sink、commit、ownership 和关闭
@@ -250,39 +261,42 @@ at-least-once 带 Source 重放与数据保留、Sink 确认配置、故障消�
 
 完整清单见 [Verification Design §2](designs/0008-runtime-verification-and-observability.md#2-设计收敛与验证断点)。当前顺序：
 
-1. M1 实现：Job Definition、Memory Source 和 Memory Sink 已通过相应测试；接下来接入
-   Runtime 生命周期、调度和 FailJob，完整 Runtime 验收仍待完成；
-2. Kafka 主要设计已收敛，完整适配验证仍待完成：真实 broker、多实例 eager/cooperative、
+1. stdio 与显式优雅停止：细化停止读取/取消的接口、切分协议与 I/O 适配，验证阻塞读取及
+   写入的退出能力后实现 Connector 和命令行示例；
+2. M1 收尾：Runtime 最小链路、确定性控制/故障测试与基准代码已实现；基准已通过单次
+   冒烟验证，验收复核与可重复的基准基线仍待完成；
+3. Kafka 主要设计已收敛，完整适配验证仍待完成：真实 broker、多实例 eager/cooperative、
    提交超时/重试及旧请求、恢复 timer/迟到事件、默认预取组合和大消息/长期背压。
    已通过的七项与证据限制见 [验证附件](verification/franz-go-v1.21.6/README.md)，详细矩阵
    见 [Kafka Design §4](designs/0007-position-and-kafka-rebalance.md#4-当前开放问题)。
-3. ClickHouse 主要设计已收敛，实际输入映射/组批、容量/热点调度、真实客户端/服务端、
+4. ClickHouse 主要设计已收敛，实际输入映射/组批、容量/热点调度、真实客户端/服务端、
    连接池竞争、完整 timeout/retry/Close、错误分类及交付前提仍待验证，见
    [ClickHouse Design §7](designs/0009-clickhouse-connector.md#7-尚未完成的适配验证)。
 
 ## 当前唯一下一步
 
-实现 Runtime 的 Memory Source → Operator Chain → Memory Sink 最小链路，落实每次运行
-的组件实例化与生命周期、有界 admission 和调度、attempt 输出暂存、同步 Sink 交接、
-FailJob、取消与统一关闭，以及成功 work 计数。按
-[Job Design](designs/0002-job-definition-and-runtime-instantiation.md)、
-[核心执行模型](designs/0001-core-execution-model.md) 和
-[Verification Design](designs/0008-runtime-verification-and-observability.md) 补齐确定性测试及 benchmark。
+从 [stdio Design §6](designs/0010-stdio-and-graceful-stop.md#6-实现前待细化项) 开始，优先细化
+Runtime 优雅停止与 Source 停止读取的协作接口、切分结束协议及输出确认边界，再验证实际
+句柄的取消能力。已接受的行为不重新讨论，未确认的 API 和缓冲默认值不视为定稿。
 
 ## 最近验证
 
-验证日期：2026-09-08。Job Definition 与独立 Memory Source/Sink 已通过相应验证，Runtime 和生产 Connector 行为仍待实现。
+验证日期：2026-09-09。Runtime 内存最小链路已通过正确性与 race 验证，生产 Connector 仍待实现。
 
 - `go test -count=1 ./...` 与 `go test -race -count=1 ./...`：Job 构建、公开 API 编译契约、
   并发派生/Build、fluent 内置转换与已有 Operator 测试通过；
-- `go test -race -count=1 -timeout 30s ./...`：Memory Source 基础、通知、背压、终态竞争与多
-  生产者交付，以及 Memory Sink 整组交接、失败计划、快照、取消、Close 竞争和使用示例均通过；
-  并发等待由 `testing/synctest` 与 barrier 控制；
+- `go test -race -count=1 -timeout 30s ./...`：包含 Runtime 生命周期、背压、取消交错、超时、
+  错误因果、Collector scope、Source/Sink 协议与真实内存链路，全部通过；
+- 带 race 的语句覆盖率统计：根包 90.6%，memory 与 operator 包均 100%，总体 93.3%；
+  语句覆盖不代表所有分支组合或并发交错已验证；
+- GOMAXPROCS=2 下全部 Runtime benchmark 以 `-benchtime=1x -count=1` 通过，属于冒烟验证，
+  不构成多轮性能基线；
 - `go vet ./...`：通过；
 - 2026-09-07 在 Kafka 版本验证附件运行 `go test -race -v -count=1 -timeout 60s ./...`：七项通过，
   原始输出和限定范围见 [验证附件](verification/franz-go-v1.21.6/README.md)；
 - 2026-09-08 在 ClickHouse 附件运行 `python3 run_probe.py`，原始 v2.48.0 驱动副本上七项
   TestProbe 带 race detector 通过，输出与限制见 [验证附件](verification/clickhouse-go-v2.48.0/README.md)；
+- 2026-09-11 stdio / 优雅停止文档整理：仅更新设计和接力信息，未新增实现或 I/O 验证证据；
 - `git diff --check`：通过；
 - Markdown 相对链接目标与章节锚点检查：通过；
-- Runtime race/fault、真实 Kafka/ClickHouse 故障测试及 benchmark：尚未运行；不能与局部驱动测试混同。
+- 真实 Kafka/ClickHouse 故障测试与 Runtime 正式多轮基准基线尚未完成，不能与内存链路或局部驱动测试混同。

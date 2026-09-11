@@ -1,7 +1,7 @@
 # yaspe Living Architecture
 
 文档状态：Living Document  
-最后更新：2026-09-09
+最后更新：2026-09-11
 当前里程碑：M1 — 有界并发的 Stateless Runtime
 关联文档：[Vision](vision.md) · [Roadmap](roadmap.md) · [Current Status](status.md)
 
@@ -85,7 +85,7 @@ Definition Plane 让用户表达“计算什么”，不直接决定 goroutine�
 
 ### 5.1 Job Definition
 
-状态：`Current`，M1 线性定义与 Build 已实现；Runtime 实例化待实现，M4 正式图化。
+状态：`Current`，M1 线性定义、Build 与 Runtime 实例化已实现，M4 正式图化。
 
 职责：
 
@@ -323,7 +323,7 @@ FlatMap  1 → 0..N (finite in early versions)
 
 ### 7.4 Collector
 
-状态：`Current`，具体 Runtime 实现尚未出现。生命周期与并发决定见
+状态：`Current`，无 position / 同步完成的 Runtime 最小链路已实现。生命周期与并发决定见
 [Operator Attempt Design](designs/0004-operator-attempt-and-collector.md)。
 
 职责：
@@ -896,7 +896,12 @@ Checkpoint 提供一致恢复基础，不自动使任意外部 Sink exactly-once
 ## 9. 当前阶段结构：M1
 
 定义平面的线性 Job 构建已实现，执行平面已有 Record、Collector、Operator 和内置转换。
-Memory Source 的有界读取与生产控制、Memory Sink 的同步接管与结果快照已实现；Runtime 调度与生命周期协调仍待实现。
+Memory Source、Memory Sink 和 Runtime 最小链路已实现，包含有界调度、同步交接、失败与生命周期协调；异步完成和恢复能力仍待实现。
+
+stdio Connector 与显式优雅停止的基本行为已接受：命令行宿主管理信号，Source 先停止
+外部读取再 drain，Runtime 在独立的停止请求下继续处理和输出。它们尚未实现，具体边界见
+[stdio Design](designs/0010-stdio-and-graceful-stop.md) 与
+[ADR-0009](decisions/0009-separate-graceful-stop-from-cancellation.md)。
 
 具体代码、测试、三维状态和唯一下一步由 [Current Status](status.md#当前代码事实) 维护；
 本节不复制类型清单。M1 目标结构见下一节，不表示全部组件已经实现。

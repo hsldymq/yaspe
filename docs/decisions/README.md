@@ -15,6 +15,7 @@
 | ADR-0006 | Source 最终失败独立报告，Kafka 会话恢复由 Connector 限时管理 | Accepted | M1–M2 | [0006](0006-source-failure-reporting-and-session-recovery.md) |
 | ADR-0007 | Source 按层计数，Kafka 不新增字节限制 | Accepted | M1–M2 | [0007](0007-layered-source-prefetch-budgets.md) |
 | ADR-0008 | ClickHouse 目标与写入策略归业务，按实际配置确认结果 | Accepted | M2+ | [0008](0008-clickhouse-business-owned-write-semantics.md) |
+| ADR-0009 | 区分优雅停止与强制取消，先停止输入再 drain 处理和输出 | Accepted | M1 扩展及后续 | [0009](0009-separate-graceful-stop-from-cancellation.md) |
 
 ## 核心执行模型局部决定
 
@@ -38,6 +39,13 @@
 | D-KAFKA-003 | 有限会话建立/恢复、阶段相关错误分类与 assignment 成功边界 | Accepted / version adaptation pending | M2 | [Kafka Design §3.6](../designs/0007-position-and-kafka-rebalance.md#36-会话建立与恢复) |
 | D-KAFKA-004 | 默认 2 个 fetch / 1,024 条 Connector 缓冲，可配置且为正整数，不承诺整体记录数或字节上限 | Accepted | M2 | [Kafka Design §3.2](../designs/0007-position-and-kafka-rebalance.md#32-分层缓存与背压) |
 | D-KAFKA-005 | Revoke callback 入口计时，blocked 只作诊断；本地期限不等于外部保证，限定 classic group | Accepted | M2 | [Kafka Design §3.4.1](../designs/0007-position-and-kafka-rebalance.md#341-本地期限与外部期限的不确定性) · [§3.7](../designs/0007-position-and-kafka-rebalance.md#37-第一版-group-协议范围) |
+
+## stdio 局部决定
+
+| ID | 决策 | 状态 | 权威位置 |
+|---|---|---|---|
+| D-STDIO-001 | 输入格式中立、自定义切分，结束时由切分函数处理尾部，默认保留末尾无换行记录 | Accepted | [stdio Design §2](../designs/0010-stdio-and-graceful-stop.md#2-输入切分与尾部) |
+| D-STDIO-002 | 写出失败不自动重试，不回滚已输出字节，也不误报成功 | Accepted | [stdio Design §3](../designs/0010-stdio-and-graceful-stop.md#3-输出与失败) |
 
 ## 可观测性局部决定
 

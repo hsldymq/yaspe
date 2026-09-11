@@ -1,7 +1,7 @@
 # 0004：Operator Attempt 与 Collector
 
 状态：Accepted
-最后更新：2026-08-26
+最后更新：2026-09-09
 适用阶段：M0+
 依赖：[核心执行模型](0001-core-execution-model.md) · [Job Definition](0002-job-definition-and-runtime-instantiation.md)
 
@@ -137,3 +137,15 @@ blocked Worker 当前持有的 work、terminal queue、Sink Coordinator 当前 w
 - FlatMap：形成有限个派生输出；
 - 任一 Operator 返回错误：attempt 失败，尚未交给 Sink 的末端输出可撤销。
 
+
+
+## 3. 实现与验证证据
+
+每次 Process 的 Collector scope、context 绑定、下游同步调用与错误传播见
+[Runtime 类型适配](../../runtime_adapter.go)，attempt 末端暂存和交接见
+[执行调度](../../runtime_execute.go)。
+
+[Runtime 测试](../../runtime_test.go) 覆盖部分 Emit 后失败不交给 Sink、返回后 Collector
+失效、上游忽略 Emit 错误时仍失败，以及零输出成功计数；
+[真实内存链路](../../runtime_memory_test.go) 验证 Filter/FlatMap 与组内顺序。
+测试不承诺检测所有违规的引用复用或并发 Collector 调用；Operator Retry 尚未实现。

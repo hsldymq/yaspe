@@ -1,7 +1,7 @@
 # 0005：Sink Handoff 与 Completion
 
 状态：Accepted
-最后更新：2026-09-08
+最后更新：2026-09-09
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [Operator Attempt](0004-operator-attempt-and-collector.md)
 
@@ -82,7 +82,7 @@ Runtime 只在整条 Operator Chain 成功后，把一个 work 的全部 termina
 同步调用交给 Memory Sink。Memory Sink 实现统一的 `Sink` 接口，保存整组记录后，在
 `Accept` 返回 `SinkAccepted, nil` 前同步报告每个原始 item 的 `SinkSucceeded`。它不返回
 Backpressured，也不把同步保存伪装成后台异步写入；返回 error 时全组未接管且不调用 reporter。
-Runtime 仍须处理通用接口规定的 pending-accept 同步报告，相关协调行为尚待实现。
+Runtime 的 pending-accept 同步报告校验见 [同步 Sink 适配](../../runtime_sink.go)，Accept 返回后的异步完成仍待实现。
 
 成功返回是整组 `Record` 及其可达引用数据的 ownership 转移点；Runtime 之后不得
 修改或复用。返回 error 时 Memory Sink 不得保存组内任何 Record 或引用，ownership 仍属于
@@ -153,8 +153,9 @@ Memory Sink 不保存 reporter，也不为每个输出启动 goroutine。
 `testing/synctest` 控制等待，不依赖 `time.Sleep`。全量
 `go test -race -count=1 -timeout 30s ./...` 与 `go vet ./...` 已通过。
 
-Runtime 的零输出不调用 Sink、失败后阻止新 handoff、pending-accept 激活、work completion
-与统一关闭协调仍待实现和验证。独立 Sink 测试不证明端到端 FailJob 或交付保证。
+Runtime 的零输出完成、失败停止新 handoff、同步 pending-accept 与统一关闭已有独立实现
+和测试，见 [Runtime 证据](0008-runtime-verification-and-observability.md#4-runtime-最小链路实现与证据)。
+独立 Sink 测试不证明异步 completion、生产 Connector 恢复或交付保证。
 
 ### 1.2 有界通知驱动交接
 

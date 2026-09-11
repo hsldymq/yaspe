@@ -1,7 +1,7 @@
 # 0001：核心执行模型总览
 
 状态：Accepted
-最后更新：2026-09-07
+最后更新：2026-09-09
 适用阶段：M0–M2
 
 > 本文件只维护跨能力的共同语言、总体执行形态、资源不变量、阶段保证和 Design 关系。
@@ -217,14 +217,8 @@ Connector prefetch
 + retry state and timers
 ```
 
-第一版只按数量控制，不实现字节预算、动态借贷或单 work 输出数量限制。Runtime 公开的核心限制为：
-
-```go
-type RuntimeOptions struct {
-    Parallelism      int
-    MaxInFlightWorks int
-}
-```
+第一版只按数量控制，不实现字节预算、动态借贷或单 work 输出数量限制。Runtime 公开的
+核心限制为 Parallelism 和 MaxInFlightWorks，配置定义和默认值见 [runtime.go](../../runtime.go)。
 
 - `Parallelism` 决定固定 Pipeline Worker goroutine 数量；Runtime 不为每个 work 创建 goroutine；
 - `MaxInFlightWorks` 是端到端 work permit 总数，覆盖 input queue、Worker current、terminal queue、Coordinator current、Sink-owned in-flight 和 retry；

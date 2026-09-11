@@ -1,7 +1,7 @@
 # 0003：Source Reader、Admission 与 Memory Source
 
 状态：Accepted
-最后更新：2026-09-09
+最后更新：2026-09-11
 适用阶段：M1–M2
 依赖：[核心执行模型](0001-core-execution-model.md) · [ADR-0007](../decisions/0007-layered-source-prefetch-budgets.md) · [ADR-0006](../decisions/0006-source-failure-reporting-and-session-recovery.md)
 
@@ -23,8 +23,9 @@ yaspe 不要求所有外部系统采用统一的物理 pull、push、callback �
 #### 1.1.1 Source 生命周期
 
 Source、Reader 与 SourceContext 的具体接口定义见 [source.go](../../source.go)。
-Memory Source 的生命周期实现见 [内存 Source](../../connector/memory/source.go)；Runtime
-提供环境、协调启动与关闭的行为仍待实现。
+Memory Source 的生命周期实现见 [内存 Source](../../connector/memory/source.go)，无 position
+Source 的 Runtime 环境与关闭协调见 [Source 环境](../../runtime_source.go) 和
+[执行流程](../../runtime_execute.go)。动态 ownership 和位置提交仍待实现。
 
 每次 Run 通过 Factory 创建一个新 Source。Runtime 最多调用一次 `Open`，成功前不调用
 `TryRead`；`Open` 可以启动 Connector 自己的 I/O、session 或 callback goroutine。
@@ -33,6 +34,11 @@ admission、取消 lifecycle context，再以独立 shutdown-deadline context �
 Runtime 只 Close 成功 Open 的 Source；Open 在部分初始化后失败时由 Source 自行清理半成品。
 Close 开始后不再调用 TryRead，Close 不伪装成正常 finished，也不提交不安全 position。通用
 Source 不要求 Close 幂等，M1 Memory Source 保留其已接受的幂等保证。
+
+stdio 的优雅停止需要把底层输入句柄关闭与最终 Source.Close 区分开，继续交付缓冲和
+结束切分结果后才报告 finished，见
+[stdio Design §4](0010-stdio-and-graceful-stop.md#4-优雅停止顺序)。停止读取的协作 API 尚待
+细化，不改变本节现有最终 Close 的语义。
 
 #### 1.1.2 独立的最终失败报告
 
@@ -494,5 +500,5 @@ Source 本身不创建 goroutine，构造不执行外部 I/O；数据结构以�
 生产者和读取 goroutine 退出。
 
 `go test -race -count=1 -timeout 30s ./...` 与 `go vet ./...` 已通过。失败报告使用可控的
-SourceContext 验证，不能据此声明 Runtime 的 admission、FailJob、关闭协调或端到端链路
-已经实现或验证。
+SourceContext 验证；Runtime admission、FailJob、关闭协调与内存链路的独立实现证据见
+[Runtime 验证](0008-runtime-verification-and-observability.md#4-runtime-最小链路实现与证据)。

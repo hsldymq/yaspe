@@ -1,6 +1,6 @@
 # yaspe Design Map
 
-最后更新：2026-09-08
+最后更新：2026-09-11
 
 本文是近期 Design 的导航和依赖地图。它维护每个 Design 的权威范围、设计状态与阅读顺序，
 不复制完整契约，也不维护实现、验证、工作区或唯一下一步；这些动态事实由
@@ -19,6 +19,7 @@
 | [0007 Position、Ownership 与 Kafka Rebalance](0007-position-and-kafka-rebalance.md) | split/position、私有 Completion Tracker、generation fence、Kafka 分层预取/提交/rebalance/会话恢复/v1.21.6 基线 | Accepted（完整适配验证未完成，见 Status） | 0001、0003、0005、ADR-0005、ADR-0006、ADR-0007 |
 | [0008 Runtime 验证与可观测性](0008-runtime-verification-and-observability.md) | 三类指标、确定性测试、故障矩阵、输出核对、分层证据、benchmark、审核清单 | Accepted（完整实现验证未完成，见 Status） | 全部近期执行契约 |
 | [0009 ClickHouse Connector](0009-clickhouse-connector.md) | 一 item 一行的业务映射、多目标组批、初始配置、v2.48.0 Native batch、确认/重试/关闭 | Accepted（完整实现验证未完成，见 Status） | 0005、0006、ADR-0004、ADR-0008 |
+| [0010 stdio 与优雅停止](0010-stdio-and-graceful-stop.md) | 自定义切分、EOF 尾部、stdio 失败策略、输入停止与输出 drain、信号边界 | Accepted（基本行为；API / I/O 细节待细化） | 0003、0005、0006、ADR-0009 |
 
 `Accepted / details discussing` 或 `pending` 表示已接受的行为继续有效，但文件明确列出的
 接口/策略问题或版本适配核验尚未完成。实现与验证是否完成不得从该标签推断。
@@ -40,6 +41,7 @@
 0007 同时依赖 0003 的 Source ownership 和 0005 的 completion 事实；图中只画主路径，
 不表示省略这些交叉依赖。
 0009 是 0005/0006 的具体 Connector 消费者，验证要求回到 0008，局部驱动证据由附件保存。
+0010 在通用 Source/Sink 与关闭契约上补充 stdio 和显式优雅停止，基本行为与待定 API 分开记录。
 
 ## 推荐阅读顺序
 

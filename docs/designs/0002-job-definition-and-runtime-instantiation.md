@@ -1,7 +1,7 @@
 # 0002：Job Definition 与 Runtime 实例化
 
 状态：Accepted
-最后更新：2026-09-08
+最后更新：2026-09-09
 适用阶段：M1+
 依赖：[核心执行模型](0001-core-execution-model.md)
 
@@ -68,7 +68,7 @@ M1 的每个最终 Job 仍只允许一个 Source、零个或多个 Operator 和�
 Job Definition 保存 Factory，不保存某次运行的活动 Source、Operator 或 Sink 实例。
 具体接口与函数适配见 [factory.go](../../factory.go)；工厂返回的 Source、Operator、Sink
 接口分别见 [source.go](../../source.go)、[operator.go](../../operator.go)、[sink.go](../../sink.go)。
-接口定义已存在，不代表 Runtime 生命周期、Source control 或 Sink completion 行为已实现。
+无 position Source 和同步完成 Sink 的运行实例化已实现；动态 Source control 与异步 Sink completion 仍待实现。
 
 `FromFunc`、`TransformFunc`、`SinkToFunc` 接收对应的无参数 factory function，在定义期
 适配为同一 Factory 协议；真正的 Create 调用仍留到 Runtime 启动时。
@@ -109,7 +109,7 @@ Sink。内置 Map、Filter、FlatMap 为每条 lane 创建独立包装 Operator�
 ## 4. Operator 可选生命周期
 
 基础 `Operator[I, O]` 仍只要求 `Process`。需要一次初始化和清理的 Operator 可以额外实现
-[OperatorLifecycle](../../operator.go)。接口已定义，以下运行期生命周期规则待 Runtime 实现。
+[OperatorLifecycle](../../operator.go)。运行实例化与生命周期实现见 [Runtime 执行流程](../../runtime_execute.go)。
 
 Runtime 不并发调用同一实例的 Open、Process 和 Close。每个实例最多成功 Open 一次；Close
 开始后不再调用 Process。Runtime 只保证 Close 已成功 Open 的实例；Open 在部分初始化后
@@ -217,5 +217,6 @@ Build 校验和独立拓扑快照。实现以 [job.go](../../job.go)、[stream.g
 - [编译契约测试](../../job_compile_test.go)：有效跨类型链路可编译，非法阶段调用及不匹配类型被编译器拒绝；
 - [转换测试](../../stream_test.go)：零/多输出、context 与错误传播、首次 Emit 失败停止，以及每次工厂创建独立包装实例。
 
-上述测试已通过 race detector；`go vet ./...` 通过。运行实例创建与启动回滚、Runtime 调度、
-M2 Retry、位置和异步 completion 尚未实现或验证，不能由定义期测试推断已满足。
+上述测试已通过 race detector；`go vet ./...` 通过。运行实例创建、启动回滚和调度已有独立
+实现与测试，详见 [Runtime 证据](0008-runtime-verification-and-observability.md#4-runtime-最小链路实现与证据)。
+M2 Retry、位置和异步 completion 仍待实现，不能由定义期或同步运行测试推断已满足。

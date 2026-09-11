@@ -1,7 +1,7 @@
 # 0008：Runtime 验证与可观测性
 
 状态：Accepted（M1/M2 验收设计已接受；实现与完整验证状态见 Status）
-最后更新：2026-09-08
+最后更新：2026-09-11
 适用阶段：M1–M2
 依赖：全部近期执行契约；见 [Design Map](design-map.md)
 
@@ -515,3 +515,64 @@ M0 的退出目标是先收敛所有影响 M1/M2 公共 API、所有权、并发
 - 旧 generation 的所有迟到路径是否被 fence；
 - Kafka session 是否独立于业务回压继续维持；
 - 宿主取消是否能有界结束所有 Runtime 管理的 goroutine。
+
+
+## 4. Runtime 最小链路实现与证据
+
+Runtime 已实现无 position Source、同步 Operator Chain 与同步完成 Sink 的完整执行路径。
+入口和配置以 [runtime.go](../../runtime.go) 为准，使用方式见
+[可执行示例](../../runtime_example_test.go)。公开接口、内部结构及字段不在本文重复列出。
+
+实现边界：
+
+- 每次 Run 创建一个 Source、每条 lane 一套 Operator 和一个共享 Sink，按约定 Open 与逆序 Close；
+- 读取前预留有界工作槽，ready 先绑定再观察取消；固定 Worker 和有界 terminal queue 承担背压；
+- Collector 按 Process 调用失效，中间输出同步驱动下一 Operator，只有整个 attempt 成功才交给 Sink；
+- Sink 支持同步结果校验、重复报告去重与容量通知；结果在 Accept 确认成功后才应用；
+- Source 独立最终失败、FailJob、宿主取消、统一关闭期限与迟到隔离已实现；所有异常返回 RunError；
+- 成功输入包括零输出输入，通过运行选项注入的回调恰好计数一次，回调 panic 不改变处理结果。
+
+当前不支持 positioned Source、动态 ownership、Operator Retry 或 Accept 返回后的异步完成。
+这些能力被明确拒绝，不能依据已有接口定义或同步报告校验把 M2 标记为已实现。
+
+### 4.1 正确性测试
+
+- [生命周期与核心测试](../../runtime_test.go)：实例隔离、启动回滚、逆序关闭、attempt 原子性、
+  Collector scope、零输出、panic 分类、错误快照与同一 Job 并发执行；
+- [控制与故障测试](../../runtime_control_test.go)：admission 取消交错、背压容量、通知与等待、
+  Sink 已进入调用的有限收尾、不响应取消的超时、统一 deadline、Source 失败去重和迟到报告、
+  无效读取结果、Sink 协议校验与多个最终错误的因果顺序；
+- [真实内存 Connector 链路](../../runtime_memory_test.go)：Filter/FlatMap、组内顺序、零输出计数，
+  以及满责任容量时 producer 独立报告失败；
+- [完整运行示例](../../runtime_example_test.go)：构建 Job、运行及读取结果。
+
+并发等待由 barrier 与 testing/synctest 控制。测试会释放故意不响应取消的组件，并等待其退出；
+超时返回只表示 Run 已有界终止和 fence，不表示当时的违规 goroutine 被强制回收。
+根模块 `go test -race -count=1 -timeout 30s ./...` 与 `go vet ./...` 已通过。
+
+### 4.2 Benchmark 实现与验证范围
+
+[Runtime benchmark](../../runtime_benchmark_test.go) 使用只读 slice 输入和消费后不累计输出的
+测试 Sink，真实 Memory Connector 由 §4.1 独立覆盖。完整 Run 基准包括组件创建、Open、执行
+和 Close，Job 与输入准备在测量外；始终启用成功计数并核对输入、输出、checksum 和容量上限。
+
+基准覆盖 overhead 的零/一/四输出、CPU 计算和真实 100 微秒等待，按 §1.8 的资源矩阵配置。
+另有空运行的启动/关闭成本、取消到 Run 返回的收尾成本，以及独立延迟采样基准。延迟每
+16 个 admission 采样一次，预分配保留最近 4096 个样本，报告该样本窗口的 p50/p95/p99；
+包含采样开销，不将窗口分位数冒充全历史分布。B/work 与 allocs/work 从测量期间的内存统计
+增量折算，单次测量可能包含运行时后台分配噪声。
+
+已在 GOMAXPROCS=2 下以 `-benchtime=1x -count=1` 运行全部基准并通过正确性断言。此结果只
+证明基准可执行，不是性能基线或优化结论。M1 收尾仍需在固定环境运行多轮、记录环境并用
+benchstat 做统计，必要时根据结果检查容量和分配代价。
+
+
+## 5. stdio 与显式优雅停止的新增验证断点
+
+基本行为及完整测试入口见 [stdio Design](0010-stdio-and-graceful-stop.md)，跨组件决定见
+[ADR-0009](../decisions/0009-separate-graceful-stop-from-cancellation.md)。需要验证自定义切分与
+尾部、底层输入停止后继续 drain、首次/再次信号、统一期限、部分写入和下游提前退出。
+真实终端/管道的 I/O 退出能力不能由内存 fake 的 Close 行为代替。
+
+上述能力尚未实现或验证。§4 的 Runtime 测试只证明现有正常 EOF 和取消路径，不证明显式
+优雅停止已实现；新增计划不改变已记录测试的范围与结果。
